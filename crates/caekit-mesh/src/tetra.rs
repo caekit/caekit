@@ -4,9 +4,120 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{MeshMetrics, MeshQuality};
+use crate::{MeshMetrics, MeshQuality, length};
 use caekit_types::Error;
 use caekit_types::error::nonempty;
+
+#[cfg(test)]
+mod tests {
+    use super::{FaceRegion, TetraMesh};
+
+    #[test]
+    fn portable_cube_root_matches_the_binary64_reference() {
+        // Round the positive root of 2 x³ = 1 to binary64. This operand also
+        // exercises the nontrivial path when the test runs under WASI.
+        assert_eq!(libm::cbrt(0.5).to_bits(), 0x3fe9_65fe_a53d_6e3d);
+    }
+
+    #[test]
+    fn mean_ratio_is_one_for_a_regular_tetrahedron_and_falls_under_flattening() {
+        // Alternate corners of a cube: every edge is sqrt(8), the determinant of the edge vectors
+        // is 16 (vertex order chosen for positive orientation), so 12 (3V)^(2/3) / sum of l^2 =
+        // 12 * 8^(2/3) / (6 * 8) = 1 exactly (Liu and Joe 1994).
+        let regular = [
+            [1.0, 1.0, 1.0],
+            [-1.0, 1.0, -1.0],
+            [1.0, -1.0, -1.0],
+            [-1.0, -1.0, 1.0],
+        ];
+        let (_, _, _, quality) = super::element(regular).expect("the regular tetrahedron is valid");
+        // Four ulp of 1 (2^-52 each): the edge vectors are scaled by the longest edge sqrt(8),
+        // which is inexact, before the determinant, the correctly rounded cube root and the
+        // squared edge lengths are formed, each adding at most about one ulp.
+        let rounding = 4.0 * f64::EPSILON;
+        assert!((quality - 1.0).abs() <= rounding, "{quality}");
+
+        // Pressing the fourth vertex towards the opposite face lowers the mean ratio towards zero.
+        // The face centroid is (1, 1, -1)/3 and the vertex sits 4/3 (-1, -1, 1) above it; keeping
+        // the fraction `s` of that height scales the volume by `s`.
+        let mut previous = quality;
+        for s in [0.5, 0.1, 0.01] {
+            let mut flattened = regular;
+            let offset = s * 4.0 / 3.0;
+            flattened[3] = [1.0 / 3.0 - offset, 1.0 / 3.0 - offset, -1.0 / 3.0 + offset];
+            let (_, _, _, flat) = super::element(flattened).expect("still positively oriented");
+            assert!(flat < previous, "{s}: {flat} not below {previous}");
+            previous = flat;
+        }
+        // At s = 0.01, (3V)^(2/3) falls by 0.01^(2/3) = 0.046, and the sum of squared edges falls
+        // from 48 to about 3 * 8 + 3 * 8 / 3 = 32, so the ratio is about 0.046 * 48 / 32 = 0.07.
+        assert!(previous < 0.1, "{previous}");
+    }
+
+    #[test]
+    fn tetrahedral_entity_ids_follow_vertex_indices_and_ignore_region_order() {
+        let mut mesh = TetraMesh {
+            vertices_m: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.0, 0.0, -1.0],
+            ],
+            cells: vec![[0, 1, 2, 3], [0, 2, 1, 4]],
+            boundary_regions: vec![
+                FaceRegion {
+                    name: "top".into(),
+                    faces: vec![[1, 2, 3], [0, 2, 3], [0, 1, 3]],
+                },
+                FaceRegion {
+                    name: "bottom".into(),
+                    faces: vec![[1, 2, 4], [0, 1, 4], [0, 2, 4]],
+                },
+            ],
+        };
+        let entities = mesh.checked("mesh").unwrap().entities().unwrap();
+        assert_eq!(
+            entities.edges,
+            [
+                [0, 1],
+                [0, 2],
+                [0, 3],
+                [0, 4],
+                [1, 2],
+                [1, 3],
+                [1, 4],
+                [2, 3],
+                [2, 4]
+            ]
+        );
+        assert_eq!(
+            entities.faces,
+            [
+                [0, 1, 2],
+                [0, 1, 3],
+                [0, 1, 4],
+                [0, 2, 3],
+                [0, 2, 4],
+                [1, 2, 3],
+                [1, 2, 4]
+            ]
+        );
+        assert_eq!(
+            entities.cell_edges,
+            [[0, 1, 2, 4, 5, 7], [1, 0, 3, 4, 8, 6]]
+        );
+        assert_eq!(entities.cell_faces, [[5, 3, 1, 0], [6, 2, 4, 0]]);
+        mesh.boundary_regions.reverse();
+        for region in &mut mesh.boundary_regions {
+            region.faces.reverse();
+            for face in &mut region.faces {
+                face.reverse();
+            }
+        }
+        assert_eq!(mesh.checked("mesh").unwrap().entities().unwrap(), entities);
+    }
+}
 
 /// Tetrahedral volume mesh in global Cartesian coordinates with named exterior face regions.
 ///
@@ -128,6 +239,23 @@ pub struct CheckedTetraMesh<'a> {
     topology: TetraTopology<'a>,
 }
 
+/// Zero-based edge and face numbering of a checked tetrahedral mesh.
+///
+/// IDs depend only on vertex indices and are independent of boundary region order.
+#[derive(Debug, PartialEq, Eq)]
+pub struct TetraEntities {
+    /// Global edge table in lexicographic order, with each vertex pair in ascending order.
+    pub edges: Vec<[usize; 2]>,
+    /// Global face table in lexicographic order, with each vertex triple in ascending order.
+    /// Includes both interior and exterior faces.
+    pub faces: Vec<[usize; 3]>,
+    /// Edge IDs by cell in the mesh's cell order. Local pairs follow
+    /// (0,1), (0,2), (0,3), (1,2), (1,3), (2,3).
+    pub cell_edges: Vec<[usize; 6]>,
+    /// Face IDs by cell in the mesh's cell order. Local face `i` is opposite local vertex `i`.
+    pub cell_faces: Vec<[usize; 4]>,
+}
+
 impl<'a> CheckedTetraMesh<'a> {
     /// Returns the mesh that was checked.
     pub fn mesh(&self) -> &'a TetraMesh {
@@ -139,10 +267,63 @@ impl<'a> CheckedTetraMesh<'a> {
         &self.topology
     }
 
+    /// Number the unique edges and faces on demand.
+    ///
+    /// Returns [`Error::InsufficientMemory`] if the entity tables cannot be sized or reserved.
+    pub fn entities(&self) -> Result<TetraEntities, Error> {
+        let (edges, cell_edges) = number_entities(&self.mesh.cells, |[a, b, c, d]| {
+            [[a, b], [a, c], [a, d], [b, c], [b, d], [c, d]]
+        })?;
+        let (faces, cell_faces) = number_entities(&self.mesh.cells, |[a, b, c, d]| {
+            [[b, c, d], [a, c, d], [a, b, d], [a, b, c]]
+        })?;
+        Ok(TetraEntities {
+            edges,
+            faces,
+            cell_edges,
+            cell_faces,
+        })
+    }
+
     /// Consumes the checked mesh and returns its [`MeshMetrics`], discarding the derived geometry.
     pub fn into_metrics(self) -> MeshMetrics {
         self.topology.metrics
     }
+}
+
+type EntityNumbering<const NODES: usize, const PER_CELL: usize> =
+    (Vec<[usize; NODES]>, Vec<[usize; PER_CELL]>);
+
+fn number_entities<const NODES: usize, const PER_CELL: usize>(
+    cells: &[[usize; 4]],
+    local: impl Fn([usize; 4]) -> [[usize; NODES]; PER_CELL],
+) -> Result<EntityNumbering<NODES, PER_CELL>, Error> {
+    let memory = || Error::InsufficientMemory {
+        resource: "tetrahedral entity numbering".to_owned(),
+    };
+    let mut keys = Vec::new();
+    let mut ids = Vec::new();
+    let count = cells.len().checked_mul(PER_CELL).ok_or_else(memory)?;
+    keys.try_reserve_exact(count).map_err(|_| memory())?;
+    ids.try_reserve_exact(cells.len()).map_err(|_| memory())?;
+    let sorted_keys = |cell| {
+        local(cell).map(|mut nodes| {
+            nodes.sort_unstable();
+            nodes
+        })
+    };
+    for &cell in cells {
+        keys.extend(sorted_keys(cell));
+    }
+    keys.sort_unstable();
+    keys.dedup();
+    for &cell in cells {
+        ids.push(sorted_keys(cell).map(|nodes| {
+            keys.binary_search(&nodes)
+                .expect("the sorted entity table contains every cell entity")
+        }));
+    }
+    Ok((keys, ids))
 }
 
 #[derive(Debug)]
@@ -268,7 +449,10 @@ impl TetraMesh {
                 metrics.smallest_cell_index = i;
             }
             metrics.largest_cell_m = metrics.largest_cell_m.max(longest);
-            let worst = metrics.quality.as_mut().expect("tetrahedral quality");
+            let worst = metrics
+                .quality
+                .as_mut()
+                .expect("tetrahedral metrics start with a quality record");
             if quality < worst.minimum_mean_ratio {
                 worst.minimum_mean_ratio = quality;
                 worst.cell_index = i;
@@ -353,12 +537,16 @@ impl TetraMesh {
             let assigned = &region.faces;
             let region = &region.name;
             let region_path = format!("{path}.boundary_regions[{i}]");
-            nonempty(&region_path, region)?;
+            let name_path = format!("{region_path}.name");
+            nonempty(&name_path, region)?;
             if boundaries.contains_key(region.as_str()) {
-                return Err(Error::invalid(region_path, "duplicate region name"));
+                return Err(Error::invalid(name_path, "duplicate region name"));
             }
             if assigned.is_empty() {
-                return Err(Error::invalid(region_path, "region has no faces"));
+                return Err(Error::invalid(
+                    format!("{region_path}.faces"),
+                    "region has no faces",
+                ));
             }
             let mut triangles = Vec::with_capacity(assigned.len());
             let mut owners = adjacency.as_mut().map(|faces| {
@@ -372,7 +560,7 @@ impl TetraMesh {
                 key.sort_unstable();
                 let Some(owner) = faces.remove(&key).filter(|owner| owner.other.is_none()) else {
                     return Err(Error::invalid(
-                        format!("{region_path}[{i}]"),
+                        format!("{region_path}.faces[{i}]"),
                         "region references an unknown, interior, or already assigned face",
                     ));
                 };
@@ -422,6 +610,17 @@ fn cell_error(path: &str, cell: usize, message: &str) -> Error {
     Error::invalid(format!("{path}.cells[{cell}]"), message)
 }
 
+/// Smallest accepted triple product of the three edges at vertex 0, after each edge is divided by
+/// the longest edge of the tetrahedron.
+///
+/// Dimensionless (it is six times the volume over the cube of the longest edge). Reason: the
+/// scaled components have magnitude at most one, so each component of the cross product is off by
+/// at most 2 epsilon (two products and a subtraction of values up to 2), and the dot product adds
+/// about 9 epsilon from those errors and the products plus 6 epsilon from two additions of
+/// partial sums up to 6: at most 15 epsilon in all. 64 epsilon is four times that bound, so a
+/// determinant at or below it cannot be told from zero and the cell is rejected as degenerate.
+const MIN_SCALED_DETERMINANT: f64 = 64.0 * f64::EPSILON;
+
 fn element(p: [[f64; 3]; 4]) -> Option<(Tet, f64, f64, f64)> {
     let edges = [
         subtract(p[1], p[0]),
@@ -440,7 +639,7 @@ fn element(p: [[f64; 3]; 4]) -> Option<(Tet, f64, f64, f64)> {
 
     let [a, b, c, ..] = edges.map(|v| v.map(|x| x / longest));
     let determinant = dot(a, cross(b, c));
-    if determinant <= 64.0 * f64::EPSILON || !determinant.is_finite() {
+    if determinant <= MIN_SCALED_DETERMINANT || !determinant.is_finite() {
         return None;
     }
     let volume = ((determinant / 6.0) * longest * longest) * longest;
@@ -456,9 +655,13 @@ fn element(p: [[f64; 3]; 4]) -> Option<(Tet, f64, f64, f64)> {
     }
     let squared_edges: f64 = lengths
         .into_iter()
-        .map(|length| (length / longest).powi(2))
+        .map(|length| {
+            let relative = length / longest;
+            relative * relative
+        })
         .sum();
-    let quality = (12.0 * (determinant / 2.0).powf(2.0 / 3.0) / squared_edges).min(1.0);
+    let volume_scale = libm::cbrt(determinant / 2.0);
+    let quality = (12.0 * (volume_scale * volume_scale) / squared_edges).min(1.0);
     let centroid = std::array::from_fn(|i| p.iter().map(|point| point[i] * 0.25).sum());
     Some((
         Tet {
@@ -491,8 +694,4 @@ fn face_geometry(
     let sign = if normal_points_in { -1.0 } else { 1.0 };
     let outward = normal.map(|x| sign * x / magnitude);
     Some((area, outward, normal_points_in))
-}
-
-fn length(v: [f64; 3]) -> f64 {
-    v.into_iter().fold(0.0_f64, f64::hypot)
 }

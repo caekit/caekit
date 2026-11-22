@@ -15,7 +15,13 @@ pub(crate) fn overlap(left: &[f64], right: &[f64]) -> Vec<FaceOverlap> {
     while a + 1 < left.len() && b + 1 < right.len() {
         let end_a = left[a + 1];
         let end_b = right[b + 1];
-        let length = end_a.min(end_b) - left[a].max(right[b]);
+        let end = if end_a <= end_b { end_a } else { end_b };
+        let start = if left[a] >= right[b] {
+            left[a]
+        } else {
+            right[b]
+        };
+        let length = end - start;
         if length > 0.0 {
             faces.push(FaceOverlap {
                 left: a,

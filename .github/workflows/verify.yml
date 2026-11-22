@@ -40,6 +40,17 @@ jobs:
       - name: Test the workspace, the documentation examples and the native CLI
         run: cargo +stable test --workspace --exclude caekit-py --exclude caekit-wasm --locked
 
+  model-mutations:
+    name: Bounded model mutations
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install stable --profile minimal
+      - run: cargo +stable test --locked -p caekit --test model_mutations -- --ignored
+
   msrv:
     name: Rust MSRV
     runs-on: ubuntu-latest

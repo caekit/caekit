@@ -5,7 +5,8 @@ pub mod physics;
 mod result;
 
 pub use caekit_mesh::{
-    AxisFrame, FaceRegion, GeometryRevision, LineMesh, MeshMetrics, MeshQuality, TetraMesh,
+    AxisFrame, FaceRegion, GeometryRevision, LineMesh, MeshMetrics, MeshQuality, TetraEntities,
+    TetraMesh,
 };
 pub use caekit_numerics::{Convergence, LinearSettings, StopReason};
 pub use caekit_types::{
@@ -48,21 +49,26 @@ pub fn solve(model: &Model) -> Result<RunReport, Error> {
     };
     let hash = Sha256::digest(serde_json::to_vec(model)?);
 
-    for (key, quantity) in &solution.quantities {
-        if !quantity.all_finite() {
-            return Err(Error::NonFiniteResult {
-                quantity: format!("{key:?}"),
-            });
-        }
-    }
-    solution
-        .quantities
-        .retain(|key, _| model.outputs.contains(key));
     let stop_reason = solution
         .convergence
         .iter()
         .find(|stage| stage.stop_reason != StopReason::Converged)
         .map_or(StopReason::Converged, |stage| stage.stop_reason);
+    if stop_reason == StopReason::Converged {
+        for (key, quantity) in &solution.quantities {
+            if !quantity.all_finite() {
+                return Err(Error::NonFiniteResult {
+                    quantity: format!("{key:?}"),
+                });
+            }
+        }
+        solution
+            .quantities
+            .retain(|key, _| model.outputs.contains(key));
+    } else {
+        solution.balances.clear();
+        solution.quantities.clear();
+    }
     Ok(RunReport {
         schema_version: RESULT_SCHEMA_VERSION,
         model_schema_version: model.schema_version,

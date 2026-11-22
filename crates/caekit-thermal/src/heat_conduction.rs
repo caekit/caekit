@@ -347,11 +347,14 @@ impl<'a> PreparedConduction<'a> {
             let path = format!("physics.thermal.boundary_conditions[{i}]");
             let region = condition.region();
             let faces = topology.boundaries.get(region).ok_or_else(|| {
-                Error::invalid(&path, format!("unknown exterior region {region:?}"))
+                Error::invalid(
+                    format!("{path}.region"),
+                    format!("unknown exterior region {region:?}"),
+                )
             })?;
             if conditions.insert(region, condition).is_some() {
                 return Err(Error::invalid(
-                    path,
+                    format!("{path}.region"),
                     format!("region {region:?} already has a thermal boundary condition"),
                 ));
             }
@@ -361,7 +364,7 @@ impl<'a> PreparedConduction<'a> {
                     for node in faces.iter().flat_map(|face| face.nodes) {
                         if prescribed[node].is_some_and(|other| other != temperature_k) {
                             return Err(Error::invalid(
-                                path,
+                                format!("{path}.temperature_k"),
                                 format!("conflicting prescribed temperatures at vertex {node}"),
                             ));
                         }

@@ -19,6 +19,7 @@ WebAssembly. These rules bind human and automated contributors alike.
 | Where inputs, dependencies and cited methods come from | [docs/provenance.md](docs/provenance.md) |
 | The Python and WebAssembly packages | [docs/python.md](docs/python.md), [docs/wasm.md](docs/wasm.md) |
 | How a release is made | [docs/RELEASING.md](docs/RELEASING.md) |
+| What to build next and how to show it is done | [Choosing the next requirement](docs/design/spec.md#choosing-the-next-requirement), [Definition of done](docs/design/spec.md#definition-of-done) |
 
 This file holds rules. Facts that change, such as the list of crates, the physics kinds,
 versions and commands, live in the pages above, and `scripts/check-docs.mjs` checks them
@@ -92,6 +93,12 @@ same change, not later.
 | CI, the minimum Rust version or a toolchain | `README.md` ("Reproduce CI locally"), `CONTRIBUTING.md`, the workflow |
 | The release process or a publishing channel | `docs/RELEASING.md`, `scripts/release.mjs`, the release workflow |
 | A numerical lesson (a stagnation, a scaling problem, a tolerance that had to move) | The physics page or `docs/model.md`, with the measured evidence and the reason |
+| A requirement of `docs/design/spec.md` | Its Status line, its row in the MUST summary when applicable and the summary counts. Name the requirement ID in the commit body. |
+
+Review each extension against the applicable rows of the
+[extension checklist](docs/design/spec.md#spec-ext-005). Record in the change
+description which checks ran, which evidence was reviewed and any checks that
+were skipped. Report a failed check with its output.
 
 Knowledge that the code does not show belongs in `docs/`: why a method was chosen, which
 assumption limits it, how a reference was derived, what failed before. Knowledge that the

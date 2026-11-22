@@ -71,6 +71,9 @@ function exercise(api, label) {
   const report = api.solve(JSON.stringify(MODEL));
   assert.equal(report.stop_reason, "converged", label);
   assert.equal(report.execution.backend, "wasm_cpu", label);
+  // 1e-13 m: 2e-9 of the 5e-5 m extension and 8 times the algebraic error the solver threshold
+  // allows for the 5-cell bar of the reference model (derivation in
+  // scripts/verify-reference-cases.mjs). This 2-cell bar is also exact in P1.
   assert.ok(Math.abs(report.quantities.end_displacement.values.tip - 5e-5) <= 1e-13, label);
   assert.throws(() => api.solve({ ...MODEL, schema_version: 2 }), { name: "CaekitError", kind: "invalid_model" }, label);
 }

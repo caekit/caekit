@@ -58,6 +58,8 @@ fn main() -> Result<(), caekit::Error> {
         unreachable!("end_displacement is reported by region");
     };
     assert_eq!(unit, "m");
+    // Linear elements reproduce the uniform strain exactly, so only the solve and rounding remain;
+    // 1e-13 m is 2e-9 of the extension, the TIP_DISPLACEMENT_TOL_M of crates/caekit/tests/axial_bar.rs.
     assert!((values["tip"] - 5.0e-5).abs() < 1.0e-13);
     Ok(())
 }
@@ -105,7 +107,7 @@ The library has no I/O, threads or clock of its own and builds for
 | [`caekit-fluids`](https://crates.io/crates/caekit-fluids) | Laminar channel momentum, mass flow and pressure recovery |
 | [`caekit-thermal`](https://crates.io/crates/caekit-thermal) | Solid heat conduction, wall conduction and coolant energy transport |
 | [`caekit-mesh`](https://crates.io/crates/caekit-mesh) | Line and tetrahedral meshes, geometry revisions, regions and mesh quality |
-| [`caekit-numerics`](https://crates.io/crates/caekit-numerics) | Sparse systems, iterative solves and convergence histories |
+| [`caekit-numerics`](https://crates.io/crates/caekit-numerics) | Sparse systems, iterative solves, convergence histories and solution verification |
 | [`caekit-types`](https://crates.io/crates/caekit-types) | Shared physical inputs, result quantities, balances and errors |
 
 [Architecture](https://github.com/caekit/caekit/blob/master/docs/ARCHITECTURE.md) describes how they depend on each other.

@@ -132,37 +132,36 @@ and may not change.
 condition kinds and output names MUST be errors.
 
 - Priority: MUST
-- Status: Partial. `Model::from_json` in `crates/caekit/src/model.rs` dispatches on
-  `schema_version`; every document type uses `#[serde(deny_unknown_fields)]` (38 uses under
-  `crates/`, counted with `grep -rn deny_unknown_fields crates --include=*.rs`). The
-  rejection test covers one model only: `schema_version` 2 and one unknown key at one level
-  (`physics.boundary_conditions[0].forcce`) of `axial_bar`. The test per reference model and
-  per object level is to be written.
+- Status: Implemented. The reference-model tests inject an unknown key at every
+  object level, including defaulted settings, and reject unknown discriminants,
+  output names and schema versions. They also check that the version error takes
+  precedence over invalid outputs.
 - Rationale: a digest and a frozen meaning are only defined for a document that cannot carry
   ignored content.
 - Acceptance: for every reference model, adding an unknown key at any object level, setting
   `schema_version` to 2, or using an unknown `kind` returns an error and no report.
-- Verified by: `crates/caekit/tests/axial_bar.rs`
-  (`rejects_future_schemas_unknown_fields_and_invalid_conditions`, exists for `axial_bar`);
-  a test over every `examples/*.json` that inserts an unknown key into every object, to be
-  written in `crates/caekit/tests/model_identity.rs` or a sibling test.
+- Verified by: `crates/caekit/tests/model_identity.rs`
+  (`reference_models_reject_unknown_fields_discriminants_and_versions`).
 - Depends on: —
 - Governed by: [blueprint § 4. Document-to-report pipeline](blueprint.md#4-document-to-report-pipeline)
 
 ### SPEC-DOC-002
 
-**SI units with unit-suffixed keys.** Every numeric model key MUST name its SI unit as a
-suffix (`length_m`, `young_modulus_pa`, `inward_heat_flux_w_m2`), and `units` MUST be `si`.
+**SI units with unit-suffixed keys.** Every dimensional numeric model key MUST name its SI
+unit as a suffix (`length_m`, `young_modulus_pa`, `inward_heat_flux_w_m2`), and `units`
+MUST be `si`. The existing `absolute_residual_tolerance` of a linear settings block
+inherits its unit from the stage, as defined in [model.md](../model.md).
 
 - Priority: MUST
-- Status: Partial. All version 1 document types follow the rule (`docs/model.md`); no
-  automated check exists, so the rule is enforced by review only.
+- Status: Implemented. The typed reference models, including defaulted fields, are
+  checked for SI units, unit suffixes and explicit exceptions.
 - Rationale: a unit carried by the key cannot be lost when a document is edited by hand,
   generated or patched.
 - Acceptance: a test walks the serialized form of every reference model and fails on any
   numeric leaf whose key lacks a suffix from a closed list of unit suffixes kept next to
-  the test; dimensionless keys are listed explicitly.
-- Verified by: to be written in `crates/caekit/tests/model_identity.rs` or a sibling test.
+  the test. Dimensionless keys and inherited residual units are explicit exceptions.
+- Verified by: `crates/caekit/tests/model_identity.rs`
+  (`reference_models_use_si_and_unit_suffixed_numeric_keys`).
 - Depends on: —
 - Governed by: [blueprint § 4. Document-to-report pipeline](blueprint.md#4-document-to-report-pipeline)
 
@@ -192,9 +191,10 @@ of [SPEC-DET-002](#spec-det-002), and a new key or value MUST appear only when D
 construct introduced by C.
 
 - Priority: MUST
-- Status: Partial. Digest freeze exists (`crates/caekit/tests/model_identity.rs`); a byte
-  round-trip test per reference model and a report key-set snapshot (converged and
-  non-converged variant per kind) do not exist.
+- Status: Implemented. The reference tests check compact model bytes against the
+  frozen SHA-256 and round-trip them byte for byte. The committed report snapshot
+  captures keys, output order and semantic labels from the v1 CLI for converged
+  and stopped variants of each kind. Analytical and cross-target tests check values.
 - Rationale: [AGENTS.md](../../AGENTS.md) freezes the meaning of version 1. A new optional
   field is serialized only when present (`#[serde(default, skip_serializing_if =
   "Option::is_none")]`), including inside the settings blocks `linear_solver`,
@@ -206,8 +206,8 @@ construct introduced by C.
   unit, a sample location, a key or value name, the order of `Output` variants, the default
   algorithm or stopping rule of an existing stage, or the digest construction fails one of
   these tests or [SPEC-DOC-003](#spec-doc-003).
-- Verified by: `crates/caekit/tests/model_identity.rs` (exists, digests); key-set snapshot
-  and round-trip tests to be written next to it.
+- Verified by: `crates/caekit/tests/model_identity.rs`, with
+  `crates/caekit/tests/common/report_contract_v1.json`, and the reference value tests.
 - Depends on: [SPEC-DOC-003](#spec-doc-003)
 - Governed by: [blueprint § 13.2 Opt-in invariance](blueprint.md#132-opt-in-invariance)
 
@@ -218,13 +218,9 @@ construct introduced by C.
 for a document that does not decode, and MUST NOT produce a report.
 
 - Priority: MUST
-- Status: Partial. `Error::invalid` in `crates/caekit-types/src/error.rs:44`; the
-  variants `Json`, `UnsupportedModelVersion`, `InvalidModel`, `NonFiniteResult` and
-  `InsufficientMemory` are in the same file. Rejection tests mostly assert message text:
-  `rejects_future_schemas_unknown_fields_and_invalid_conditions`
-  (`crates/caekit/tests/axial_bar.rs`) asserts the path `physics.mesh.vertices_m[1]` once
-  and the message `each endpoint requires` without a path. Path assertions in every
-  rejection test are to be written.
+- Status: Implemented. The rejection tests match the structured path on
+  `Error::InvalidModel` and check the error variant on decoding failures. CLI
+  tests check the displayed field, exit code and absence of a report.
 - Rationale: a person or a program can only repair what is located.
 - Acceptance: every rejection test asserts the path, for example
   `physics.mesh.cells[3]`; computed-value violations (a solved temperature at or below
@@ -241,16 +237,18 @@ to `solve` MUST cause a panic; `expect` and `unreachable!` MUST only state an in
 that earlier validation established, and their message MUST name it.
 
 - Priority: MUST
-- Status: Partial. The rule is in [AGENTS.md](../../AGENTS.md) and held by review; no
-  fuzzing job exists (`.github/workflows/verify.yml`).
+- Status: Implemented. The bounded mutation tests exercise the byte reader and the
+  solver independently with fixed budgets and seeds. The standalone CI job runs
+  them and the [model page](../model.md#input-mutation-checks) gives the counts
+  and command.
 - Rationale: the kernel runs inside hosts (Python, browsers) where a panic is a crash or an
   opaque trap.
 - Acceptance: a fuzz target over `Model::from_json` and `solve` with small iteration
   budgets runs in a non-required CI job whose definition fixes the number of executions
   per target; the job fails on any panic; that number and the command that reproduces the
   run are recorded on [model.md](../model.md); every `expect` message names an invariant.
-- Verified by: fuzz target to be written (development dependency only); review of `expect`
-  sites with `grep -rn "expect(" crates/*/src`.
+- Verified by: `crates/caekit/tests/model_mutations.rs`, the `model-mutations` job
+  in `.github/workflows/verify.yml`, and review of the library's `expect` sites.
 - Depends on: [SPEC-DOC-005](#spec-doc-005)
 - Governed by: [blueprint § 14. Errors and failure taxonomy](blueprint.md#14-errors-and-failure-taxonomy)
 
@@ -866,13 +864,16 @@ with edges as `(min, max)` vertex pairs in ascending lexicographic order and fac
 sorted triples.
 
 - Priority: MUST
-- Status: Partial. The P1 vertex and node-major layout exist
-  (`crates/caekit-mechanics/src/elastic_solid.rs`); edge and face numbering do not.
+- Status: Implemented. P1 unknowns use vertex and node-major layouts.
+  `CheckedTetraMesh::entities` supplies global edge and face IDs and local
+  maps, with no dependence on the boundary region order. The P2 numbering
+  rule applies when P2 spaces are introduced.
 - Rationale: numbering determines summation order and therefore bits
   ([SPEC-DET-006](#spec-det-006)).
 - Acceptance: numbering is invariant under reordering of region lists; a test fixes the
   numbering of a small mesh.
-- Verified by: `caekit-mesh` tests (to be written for entities).
+- Verified by: `tetrahedral_entity_ids_follow_vertex_indices_and_ignore_region_order`
+  in `caekit-mesh` and by the physics reference tests for the P1 layouts.
 - Depends on: —
 - Governed by: [blueprint § 5.2 Mesh and topology](blueprint.md#52-mesh-and-topology)
 
@@ -1122,11 +1123,11 @@ converged only when the true residual recomputed after the stop meets the thresh
 ([SPEC-CNV-002](#spec-cnv-002)), otherwise as `numerical_breakdown`.
 
 - Priority: MUST
-- Status: Partial. The routine leaves its loop when `rᵀz ≤ 0` or `pᵀAp ≤ 0` or a scalar is
+- Status: Implemented. The routine leaves its loop when `rᵀz ≤ 0` or `pᵀAp ≤ 0` or a scalar is
   not finite (`pcg` in `crates/caekit-numerics/src/lib.rs`); after the loop it recomputes
   `b − A x`, reports it as `final_true_residual_l2` and sets `converged` only when it meets
   the threshold. A non-positive Jacobi diagonal returns before any iteration, with no
-  threshold and no true residual. No test exercises the indefinite exit.
+  threshold and no true residual. The sparse-system tests exercise both exits.
 - Rationale: CG theory (Hestenes and Stiefel 1952) requires SPD; on an indefinite operator
   its iterates are meaningless, but an iterate whose recomputed residual meets the
   threshold is a solution regardless of how it was reached.
@@ -1134,9 +1135,10 @@ converged only when the true residual recomputed after the stop meets the thresh
   true residual; an indefinite test matrix with a positive diagonal (for example
   `A = [[1, 2], [2, 1]]`, eigenvalues 3 and −1, `b = [1, −1]`, for which `pᵀAp = −2` in
   the first iteration) ends with `numerical_breakdown`, `iterations = 0` and the true
-  residual `‖b‖₂ = √2` of the zero iterate (test to be written).
+  residual `‖b‖₂ = √2` of the zero iterate.
 - Verified by: `crates/caekit-numerics/tests/sparse_system.rs`
-  (`distinguishes_an_iteration_limit_from_a_numerical_breakdown`); diagnostic content by
+  (`distinguishes_an_iteration_limit_from_a_numerical_breakdown` and
+  `rejects_an_indefinite_search_direction_with_a_verified_residual`); diagnostic content by
   [SPEC-CNV-007](#spec-cnv-007).
 - Depends on: —
 - Governed by: [blueprint § 5.7 Linear operators, preconditioners and methods](blueprint.md#57-linear-operators-preconditioners-and-methods)
@@ -1396,11 +1398,9 @@ stages MUST be returned; physical quantities and balances MUST be withheld for t
 run, including earlier output times of a transient run.
 
 - Priority: MUST
-- Status: Partial. `caekit::solve` (`crates/caekit/src/lib.rs`) takes the run's stop
-  reason from the first non-converged stage; the domain solvers return traces without
-  quantities or balances when a stage fails. Tests exist for `axial_bar`, `cooling_channel`
-  and `thermoelastic_solid`; `laminar_channel`, `elastic_solid`, `heat_conduction` and
-  `multimaterial_heat_conduction` have none.
+- Status: Implemented. `caekit::solve` takes the run's stop reason from the first
+  non-converged stage and withholds quantities and balances for the whole run.
+  Tests cover the executed stage traces for all seven kinds.
 - Rationale: no unconverged number can then be mistaken for a result.
 - Acceptance: for each kind, a run with a too-small iteration budget has empty `quantities`
   and `balances` and exactly the traces of the stages that ran.
@@ -1409,7 +1409,7 @@ run, including earlier output times of a transient run.
   `crates/caekit/tests/thermoelastic_solid.rs`
   (`iteration_limits_preserve_only_the_executed_stage_traces`),
   `crates/caekit/tests/cooling_channel.rs` (`stops_with_trace_if_coupling_fails_to_converge`);
-  a test per remaining kind to be written.
+  `crates/caekit/tests/stopped_reports.rs` (laminar flow, elasticity and both conduction kinds).
 - Depends on: [SPEC-CNV-001](#spec-cnv-001)
 - Governed by: [blueprint § 5.8 Convergence trace](blueprint.md#58-convergence-trace)
 
@@ -1422,8 +1422,14 @@ and WebAssembly MUST return the report of a non-converged run and raise or throw
 - Priority: MUST
 - Status: Implemented. `crates/caekit-cli/src/main.rs` (exit 2 at line 31); Python
   exceptions `CaekitError`, `InvalidModelError`, `CalculationError` in
-  `crates/caekit-py/src/lib.rs`. The user-facing contract is documented on
-  [model.md](../model.md), [python.md](../python.md) and [wasm.md](../wasm.md).
+  `crates/caekit-py/src/lib.rs`. The user-facing contract is the outcome table of
+  [model.md › Run outcomes](../model.md#run-outcomes), which [python.md](../python.md) and
+  [wasm.md](../wasm.md) link. The "Once SPEC-CNV-006" clause holds with two stated exceptions:
+  an allocation failure outside the two checked buffers aborts the process (no exit code 0, 1
+  or 2 and no `CaekitError`; untested), and Python raises `TypeError` or `OSError` for an
+  unreadable model or a bad argument. Numerical breakdown, non-finite results and insufficient
+  memory reach the CLI and the bindings by the code paths the table names; only the Rust tests
+  drive a breakdown, and no test drives the other two.
 - Rationale: drivers act on a typed signal without parsing text.
 - Acceptance: Now: the CLI test checks exit codes 0, 1 and 2, and the Python and
   WebAssembly tests check a returned non-converged report and a raised or thrown input
@@ -1442,8 +1448,12 @@ non-finite result; insufficient memory), what the report contains, the exit code
 host behaviour.
 
 - Priority: SHOULD
-- Status: Partial. The facts are in the prose of `docs/model.md`, [python.md](../python.md)
-  and [wasm.md](../wasm.md); no single table exists.
+- Status: Implemented. One table in [model.md › Run outcomes](../model.md#run-outcomes) states,
+  for converged, iteration limit, numerical breakdown, input error, non-finite result,
+  insufficient memory and an unreadable model or bad argument, the report, the Rust result, the
+  CLI exit code and the Python and WebAssembly behaviour. It names the two allocations that are
+  checked and which rows the tests cover. [python.md](../python.md), [wasm.md](../wasm.md) and
+  both package READMEs link to it instead of restating it.
 - Rationale: one home for the contract that every driver and automated client relies on.
 - Acceptance: the table exists; the binding pages link to it instead of restating it.
 - Verified by: inspection; `node scripts/check-docs.mjs`.
@@ -1706,7 +1716,12 @@ discrete fluxes of the scheme, not from recovered gradients.
 - Status: Implemented. Prescribed-temperature reactions are accumulated from element
   contributions (`crates/caekit-thermal/src/heat_conduction.rs:608-709`); support reactions
   of `elastic_solid` come from the internal force vector
-  (`crates/caekit-mechanics/src/elastic_solid.rs:625`).
+  (`crates/caekit-mechanics/src/elastic_solid.rs`). The "Once SPEC-CON-006" clause holds where
+  the bound applies: `crates/caekit/tests/balance_bounds.rs` checks every balance that meets the
+  premise of [SPEC-CON-006](#spec-con-006) against `√n_free · ‖r‖₂` plus a stated binary64
+  allowance. `channel_mass`, `interface_energy` and `solid_energy:<region>` do not meet the
+  premise and keep the tolerances their tests state; the per-kind tests keep their fixed
+  tolerances, which lie above the bound.
 - Rationale: residual reactions converge at `O(h^{2p})` for smooth problems and close the
   balance to the algebraic error, while recovered gradients do not.
 - Acceptance: Now: reactions and boundary heat rates are formed from the assembled residual
@@ -1715,7 +1730,7 @@ discrete fluxes of the scheme, not from recovered gradients.
   derived from its bound.
 - Verified by: `crates/caekit/tests/heat_conduction.rs`
   (`shared_prescribed_nodes_contribute_once_to_the_energy_balance`),
-  `crates/caekit/tests/multimaterial_heat_conduction.rs`.
+  `crates/caekit/tests/multimaterial_heat_conduction.rs`, `crates/caekit/tests/balance_bounds.rs`.
 - Depends on: [SPEC-CON-001](#spec-con-001)
 - Governed by: [blueprint § 5.9 Balances](blueprint.md#59-balances)
 
@@ -1768,12 +1783,18 @@ algebraic residual entries at the free DOFs, so Cauchy–Schwarz gives
 evidence.
 
 - Priority: SHOULD
-- Status: Partial. The algebraic-error half is stated ([model.md](../model.md)); the bound
-  and the labelling are not.
+- Status: Implemented. [model.md › What a closed balance proves](../model.md#what-a-closed-balance-proves)
+  derives imbalance = `w_Fᵀ r`, hence `|imbalance| ≤ √n_free · ‖r‖₂` (`ρ · √n_free · ‖r‖₂` for
+  moments through a rigid-rotation test vector, a `W L s` factor for the channel momentum, cell
+  indicators for the finite-volume energy balances), and labels such a balance consistency
+  evidence, not correctness evidence. It lists the balances that meet the premise and the three
+  that do not (`channel_mass`, `interface_energy`, `solid_energy:<region>`).
+  `crates/caekit/tests/balance_bounds.rs` checks every applicable balance of the seven reference
+  models; only `heat_conduction`, whose single free equation is solved to `‖r‖₂ = 0`, relies on
+  the stated binary64 allowance.
 - Rationale: prevents reading a closed balance as proof of an accurate field.
 - Acceptance: the derivation is on the model page; reference tests check the bound.
-- Verified by: inspection; a test that compares imbalance and `√n_free · ‖r‖₂` on the
-  reference models.
+- Verified by: inspection; `crates/caekit/tests/balance_bounds.rs`.
 - Depends on: [SPEC-CON-003](#spec-con-003)
 - Governed by: [blueprint § 10.2 Algebraic error](blueprint.md#102-algebraic-error)
 
@@ -1874,17 +1895,23 @@ the solution exactly.
 MUST measure a refinement study and require the expected order.
 
 - Priority: MUST
-- Status: Partial. `laminar_channel` (`grid_refinement_recovers_second_order_pressure_loss`),
-  `cooling_channel` (`thermal_mesh_refinement_recovers_first_order_enthalpy_advection`),
-  `heat_conduction` (`uniform_source_converges_inside_elements_and_leaves_the_solid`),
+- Status: Implemented. Every kind whose reported quantities carry a discretization error has a
+  study in the form of [SPEC-VER-003](#spec-ver-003): `laminar_channel`
+  (`grid_refinement_recovers_second_order_pressure_loss`,
+  `grid_refinement_recovers_second_order_velocity_in_the_l2_norm`), `cooling_channel`
+  (`thermal_mesh_refinement_recovers_first_order_enthalpy_advection`), `heat_conduction`
+  (`uniform_source_converges_inside_elements_and_leaves_the_solid`),
   `multimaterial_heat_conduction`
-  (`a_curved_profile_converges_in_temperature_and_in_each_layer_flux`) and
-  `thermoelastic_solid`
-  (`a_temperature_gradient_drives_the_local_displacement_and_converges_with_refinement`) have
-  one; **`elastic_solid` has none**: `crates/caekit/tests/elastic_solid.rs` contains patch and
-  load-case checks only, and an affine patch is represented exactly by linear tetrahedra, so
-  it cannot reveal an order defect. `axial_bar` is nodally exact for its loads (no
-  discretization error in the reported quantities, [axial-bar](../physics/axial-bar.md)).
+  (`a_curved_profile_converges_in_temperature_and_in_each_layer_flux`), `thermoelastic_solid`
+  (`a_temperature_gradient_drives_the_local_displacement_and_converges_with_refinement`) and
+  `elastic_solid` (`lame_thick_cylinder_converges_at_the_formal_orders_in_l2_and_energy`: the
+  Lamé thick cylinder through schema version 1 inputs only, on four graded levels n = 4, 8, 16,
+  32 with 384 to 24,576 tetrahedra; displacement L² fitted order 1.976164 inside 2 ± 0.042677 and
+  energy-norm order 0.986007 inside 1 ± 0.028063, see
+  [elastic-solid](../physics/elastic-solid.md#refinement-study)). `axial_bar` is nodally exact
+  for its loads (no discretization error in the reported quantities,
+  [axial-bar](../physics/axial-bar.md)). The study goes through schema version 1 (decision D7 of
+  [next-steps](next-steps.md#decisions)), so [SPEC-VER-004](#spec-ver-004) stays Planned.
 - Rationale: [AGENTS.md](../../AGENTS.md) requires it; a patch test cannot show order.
 - Acceptance: `elastic_solid` gains a study with a smooth, non-polynomial exact solution (a
   manufactured solution through the Rust API, or the Lamé thick cylinder) on at least four
@@ -1892,8 +1919,12 @@ MUST measure a refinement study and require the expected order.
   (expected order 1) for linear tetrahedra (Ciarlet 2002), with the measured orders and the
   command on [elastic-solid](../physics/elastic-solid.md); the study follows
   [SPEC-VER-003](#spec-ver-003).
-- Verified by: `crates/caekit/tests/elastic_solid.rs` (test to be written).
-- Depends on: [SPEC-VER-004](#spec-ver-004), [SPEC-VER-003](#spec-ver-003)
+- Verified by: `crates/caekit/tests/elastic_solid.rs`
+  (`lame_thick_cylinder_converges_at_the_formal_orders_in_l2_and_energy`,
+  `the_order_study_rejects_the_affine_cylinder`) and the refinement test of each other kind
+  named above.
+- Depends on: [SPEC-VER-003](#spec-ver-003); [SPEC-VER-004](#spec-ver-004) only for the
+  manufactured-solution route, which the Lamé study does not take.
 - Governed by: [blueprint § 11.2 Refinement studies](blueprint.md#112-refinement-studies)
 
 ### SPEC-VER-003
@@ -1907,12 +1938,32 @@ the measured error norm at or below `δ = Δp · ln r / 2` at each level, with `
 and refinement ratio `r` (`δ = 3.4·10⁻³` at `r = 2`, rounded down).
 
 - Priority: MUST (with the SHOULD parts as stated)
-- Status: Partial. Existing studies measure pairwise ratios on structured families; no
-  least-squares fit or algebraic-error budget is checked.
+- Status: Implemented. The six studies of [SPEC-VER-002](#spec-ver-002) measure a solution
+  outside the discrete space in integral norms on non-uniform or perturbed self-similar levels
+  (`r = 2`) and apply the one band rule of [blueprint § 11.2](blueprint.md#112-refinement-studies)
+  (ruling R-9, accepted 2026-11-22, option A) through `caekit_numerics::verify::band_check`:
+  the least-squares order over the finest three levels inside `p_f ± (0.01 + 1.5 s)`, with `s`
+  the spread of the two finest pairwise orders, valid for a shrink factor `ρ ≥ 2` of their
+  distances from `p_f` or a finest distance of at most 0.01, which the study checks. They
+  re-solve every level at the relative tolerance divided by 100
+  (largest relative change of a measured error norm: 1.27e-10 `heat_conduction`, 1.360e-8
+  `multimaterial_heat_conduction`, 5.661e-11 `thermoelastic_solid`, 1.378e-10 `elastic_solid`,
+  9.846e-13 `laminar_channel`, 3.686e-9 `cooling_channel`, all below `δ = 3.4·10⁻³`), and fail
+  on a trap. Where the kind has a source the trap removes it (`heat_conduction`,
+  `multimaterial_heat_conduction`); otherwise it is another exactly represented case: uniform
+  temperature (`thermoelastic_solid`), equal inner and outer pressure (`elastic_solid`), an
+  isothermal hot face (`cooling_channel`), and the prescribed volume flow and the round-off
+  momentum imbalance (`laminar_channel`, whose only source, the pressure gradient, validation
+  forbids to be zero). No page derives a band of its own. Where a trap's noise spread makes
+  its band wide, the study rejects the trap through the shrink condition (`laminar_channel`
+  momentum imbalance) or the algebraic check (`multimaterial_heat_conduction` temperature and
+  right flux), as the kind's page states.
 - Rationale: a two-sided band also catches super-optimal results from exactness traps. The
   budget follows from the observed order `p̂ = ln(e₁/e₂)/ln r`: relative perturbations
-  `±δ` of both errors move `p̂` by at most `ln((1+δ)/(1−δ))/ln r ≈ 2δ/ln r`, so
-  `|Δp̂| ≤ Δp` needs `δ ≤ Δp · ln r / 2`; at `r = 2`, `0.01 · ln 2 / 2 = 3.466·10⁻³`.
+  `±δ` of both errors move `p̂` by at most `ln((1+δ)/(1−δ))/ln r = 2 artanh(δ)/ln r`, so
+  `|Δp̂| ≤ Δp` needs `δ ≤ tanh(Δp · ln r / 2)`, which is `Δp · ln r / 2` to first order; at
+  `r = 2`, `0.01 · ln 2 / 2 = 3.466·10⁻³`, and the exact bound is smaller by a relative
+  `(Δp ln r)²/12 = 4.0·10⁻⁶`, which the rounding down to `3.4·10⁻³` covers.
   `Δp = 0.01` keeps the algebraic shift below one third of the narrowest order margin among
   the existing studies: `grid_refinement_recovers_second_order_pressure_loss`
   (`crates/caekit/tests/laminar_channel.rs`) accepts error ratios in `3.8..4.1` at `r = 2`,
@@ -1920,10 +1971,18 @@ and refinement ratio `r` (`δ = 3.4·10⁻³` at `r = 2`, rounded down).
   `0.036` above the expected order 2.
 - Acceptance: each study reports levels, errors, fitted order and band; each level is
   solved again with the relative solver tolerance divided by 100, and the relative change of
-  the measured error norm is at most `δ`; the study fails when the source term is removed
-  (nodal-exactness trap check).
-- Verified by: the refinement tests of each kind; [SPEC-VER-010](#spec-ver-010) for the
-  fitting function.
+  the measured error norm is at most `δ`; the study fails on a solution the scheme represents
+  exactly: with the source term removed where the kind has one, otherwise with another exactly
+  represented case (trap check). The trap was widened from source removal on 2026-11-21 because
+  `cooling_channel` has no source and `laminar_channel` cannot remove its only one.
+- Verified by: the refinement tests of each kind named in [SPEC-VER-002](#spec-ver-002) and
+  their trap tests (`the_source_study_rejects_the_exact_linear_solution`,
+  `the_band_rejects_the_study_without_the_source_term`, `the_order_study_rejects_the_affine_cylinder`,
+  `the_study_fails_for_quantities_the_scheme_reproduces_exactly`,
+  `the_order_study_rejects_a_solution_the_scheme_represents_exactly`, and the trap inside
+  `a_temperature_gradient_drives_the_local_displacement_and_converges_with_refinement`);
+  [SPEC-VER-010](#spec-ver-010) for the fitting and band functions (`fitted_order`,
+  `band_check`).
 - Depends on: [SPEC-VER-010](#spec-ver-010)
 - Governed by: [blueprint § 11.2 Refinement studies](blueprint.md#112-refinement-studies)
 
@@ -2038,14 +2097,27 @@ the sequence is monotone. `ln` and `powf` come from `libm`
 ([SPEC-DET-003](#spec-det-003)).
 
 - Priority: SHOULD
-- Status: Planned.
+- Status: Implemented in Rust. `caekit_numerics::verify` (`crates/caekit-numerics/src/verify.rs`)
+  provides the two-level, pairwise and least-squares observed order, Richardson extrapolation,
+  `GCI₁₂` and `GCI₂₃` with `F_s = 1.25` and the asymptotic ratio, and the monotone, oscillatory
+  and divergent classification; `grid_convergence` returns `NotMonotone` instead of a GCI. It
+  also gives the algebraic budget of [SPEC-VER-003](#spec-ver-003),
+  `AlgebraicCheck::warning` when a solve at the tolerance divided by 100 moves the error norm
+  by more than that budget, and `band_check`, the band rule of a refinement study
+  ([blueprint § 11.2](blueprint.md#112-refinement-studies)). `ln` and `pow` come from `libm`. The NASA NPARC example is reproduced:
+  `p = 1.786170`, `f(h=0) = 0.97130`, `GCI₁₂ = 0.103083 %`, `GCI₂₃ = 0.356249 %`. Python and
+  WebAssembly bindings of these functions do not exist yet.
 - Rationale: users estimate their own discretization error with the same code in Rust,
   Python and WebAssembly.
 - Acceptance: the observed order and `GCI₁₂` of the NASA NPARC worked example of spatial
   convergence are reproduced to the digits the example page prints (three grids, order
   ≈ 1.786, `GCI₁₂` ≈ 0.103 % with safety factor 1.25); a warning is returned when the
   iterative error is not below the budget of [SPEC-VER-003](#spec-ver-003).
-- Verified by: numerics tests (to be written).
+- Verified by: `crates/caekit-numerics/src/verify.rs`
+  (`reproduces_the_nparc_spatial_convergence_example`,
+  `classifies_monotone_oscillatory_and_divergent_sequences`,
+  `grid_convergence_refuses_sequences_that_are_not_monotone`,
+  `algebraic_check_warns_above_the_budget` and six more).
 - Depends on: [SPEC-DET-003](#spec-det-003)
 - Governed by: [blueprint § 11.2 Refinement studies](blueprint.md#112-refinement-studies)
 
@@ -2181,22 +2253,10 @@ crate with `default-features = false`) and be tested for bit equality across tar
 before a result relies on it.
 
 - Priority: MUST
-- Status: Partial. The Rust standard library documents the precision of `hypot`, `powi`,
-  `powf` and the transcendental functions as non-deterministic (varying by platform and Rust
-  version), and documents that `f64::max` and `f64::min` may return either input
-  non-deterministically when the inputs compare equal, as `+0.0` and `-0.0` do. Uses in
-  library code:
-
-  | Site | Path class |
-  | --- | --- |
-  | `crates/caekit-numerics/src/lib.rs:249` (`norm`, `hypot` fold) | Stop decision of every stage |
-  | `crates/caekit-numerics/src/lib.rs:235` (rounding bound, `hypot`) | Stagnation decision |
-  | `crates/caekit-mesh/src/line.rs:52` (`hypot` fold) | Validation accept or reject of the axis direction |
-  | `crates/caekit-mesh/src/tetra.rs:497` (`length`, `hypot` fold) | Element geometry, face areas and normals, mesh metrics |
-  | `crates/caekit-mesh/src/tetra.rs:459,461` (`powi(2)`, `powf(2/3)`) | Reported mesh quality |
-  | `crates/caekit-mechanics/src/elastic_solid.rs:258` (`powi(2)`) | Thermal-strain variance (energy term) |
-  | `crates/caekit-mechanics/src/elastic_solid.rs:872` (`hypot` fold) | Reaction-balance tolerance that can stop a run |
-  | `.max` forming each stage threshold: `pcg` in `crates/caekit-numerics/src/lib.rs`, `crates/caekit-thermal/src/lib.rs:433`, `crates/caekit-mechanics/src/elastic_solid.rs:882` | Reported `residual_threshold` and the stop decision; signed-zero tie when the absolute tolerance is `-0.0` (accepted by `LinearSettings::validate` and the coupling-settings validation, since `-0.0 < 0.0` is false) and the scaled term is `0.0` |
+- Status: Implemented. The library uses scaled norms and explicit squares. Tetrahedral
+  geometry scales by a power of two to preserve the reference stage decisions. Reported
+  mean ratio uses portable `libm::cbrt`, tested on native and WASI. Zero tolerances are
+  normalized when computing thresholds.
 
 - Rationale: a residual within a few ulps of its threshold can give `converged` on one target
   and `iteration_limit` on another (exit 0 against 2); a platform-dependent face area
@@ -2205,10 +2265,10 @@ before a result relies on it.
   target and `0.0` on another serializes differently.
 - Acceptance: every `hypot`, `powi` and `powf` site above uses a scaled norm
   `s · sqrt(Σ (xᵢ/s)²)` with `s = max |xᵢ|`, defined as `0` when `s = 0` and as `s` when `s`
-  is not finite, `x * x`, or an exact reformulation (compare cubes instead of `powf(2/3)`);
-  every threshold `max` is replaced by an explicit comparison with a stated tie result, or
-  its absolute operand is first normalized inside the computation (`a + 0.0` turns `-0.0`
-  into `+0.0` under round-to-nearest); the validation keeps accepting `-0.0`, because
+  is not finite, a power-of-two scaled norm for geometry, `x * x`, or a portable
+  cube root squared for the reported mean ratio;
+  every threshold `max` either uses an explicit comparison with a stated tie result
+  or normalizes zero operands inside the computation. Validation keeps accepting `-0.0`, because
   rejecting or rewriting it at decode would change the meaning or the digest of a valid
   version 1 document ([SPEC-DOC-004](#spec-doc-004)); all `model_sha256` values are
   unchanged; on every reference model the
@@ -2233,7 +2293,9 @@ atan, atan2, sinh, cosh, tanh, exp_m1, ln_1p}`, `std::collections::{HashMap, Has
 `std::time`, `std::thread`, `std::fs` and `std::env::var*`.
 
 - Priority: MUST
-- Status: Planned. No `clippy.toml` exists at the repository root.
+- Status: Implemented. The root Clippy configuration bans the listed methods and types.
+  The host surfaces and documentation have local configurations. A compile-fail probe
+  reported a disallowed-method or disallowed-type error for each configured entry.
 - Rationale: a rule without enforcement regresses with the next contribution.
 - Acceptance: a root `clippy.toml` sets `disallowed-methods` (the `f64` methods above,
   `std::env::var`, `std::env::var_os`, `std::env::vars`, `std::thread::spawn` and the
@@ -2243,11 +2305,9 @@ atan, atan2, sinh, cosh, tanh, exp_m1, ln_1p}`, `std::collections::{HashMap, Has
   `clippy.toml` from the crate directory upward, so `crates/caekit-cli`, `crates/caekit-py`,
   `crates/caekit-wasm` and `docs/` (`caekit-docs`) each hold their own `clippy.toml` with
   empty lists. `--all-targets` also lints tests, whose analytical references use `exp`,
-  `powi` and similar functions (for example `crates/caekit/tests/cooling_channel.rs`,
-  `crates/caekit/tests/laminar_channel.rs`): every file under `crates/*/tests/` and every
-  `#[cfg(test)]` module starts with
-  `#![allow(clippy::disallowed_methods, clippy::disallowed_types)]` and the comment
-  "reference values in tests are not decision or result paths". Then
+  `powi` and similar functions (for example `crates/caekit/tests/cooling_channel.rs`
+  and `crates/caekit/tests/laminar_channel.rs`). Scope each test exception to the
+  lint and reference or timing measurement that needs it. Then
   `cargo clippy --workspace --all-targets --locked -- -D warnings` passes on the tree and
   fails on a deliberate use of each item in `crates/caekit-numerics/src`.
 - Verified by: the CI Clippy job; a one-off check with a deliberate use of each item,
@@ -2262,9 +2322,9 @@ iteration counts and equal stop reasons in every stage, and SHOULD compare the r
 histories exactly and record the report digests of both builds.
 
 - Priority: MUST
-- Status: Partial. `scripts/verify-reference-cases.mjs` asserts that both builds report
-  `converged` (lines 135-140) and that the true residual is within the threshold; it does not
-  compare `iterations` or histories.
+- Status: Implemented. `scripts/verify-reference-cases.mjs` compares stage names,
+  iteration counts and stop reasons exactly. It prints exact residual-history agreement
+  and the two SHA-256 report digests with platform-specific execution fields normalized.
 - Rationale: the evidence for [SPEC-DET-003](#spec-det-003); a determinism rule without a
   test does not meet [AGENTS.md](../../AGENTS.md) §4.
 - Acceptance: the script fails when the WASI build reports one iteration more on any stage;
@@ -2443,13 +2503,9 @@ precision, architecture, operating system, threads and `solver_version`), the ru
 reason, the convergence list, balances and quantities.
 
 - Priority: MUST
-- Status: Partial. `RunReport` and `Execution` in `crates/caekit/src/result.rs`; packing
-  in `crates/caekit/src/lib.rs`. The TypeScript declarations (`interface RunReport`,
-  `Execution` in `crates/caekit-wasm/src/lib.rs`) are checked against reports by
-  `typings_test.mjs`. The Python package returns untyped dictionaries
-  (`solve(...) -> dict[str, Any]` in `crates/caekit-py/python/caekit/__init__.py`;
-  `_caekit.pyi` types `solve_json` as returning `str`), and no Python test compares the
-  report key set.
+- Status: Implemented. The TypeScript test compares the declarations with the
+  reports of all reference models. The installed Python package test checks
+  the complete report and execution key sets for the same models.
 - Rationale: a reproducible report names what ran, where and how.
 - Acceptance: the TypeScript declarations list the report fields and `typings_test.mjs`
   checks them against the reference reports; a Python test asserts the key set of the
@@ -2467,16 +2523,17 @@ JSON.
 
 - Priority: MUST; the transient and nested clauses bind with the first transient or nested
   stage
-- Status: Partial. Steady fields are on request only (`crates/caekit/src/lib.rs`); the
-  per-stage term of the size bound is not stated. No transient or nested stage exists.
+- Status: Implemented for steady reports. The reference test checks output
+  omission, entity counts and per-stage trace limits. The transient and nested
+  clauses bind when their stages are introduced.
 - Rationale: 32-bit WebAssembly memory is limited to 4 GiB (memory64 of WebAssembly 3.0
   lifts the limit), and JSON size grows with every field and step.
 - Acceptance: [model.md](../model.md) states the size bound of a report: the requested
   outputs times their entity counts, plus per stage a fixed record and the bound of its
   residual history in terms of `max_iterations`; a test checks the bound on every reference
   report.
-- Verified by: a test over the reference reports (to be written); tests of the first
-  transient kind.
+- Verified by: `reference_reports_are_bounded_by_requested_entities_and_iteration_limits`
+  in `crates/caekit/tests/model_identity.rs`; tests of the first transient kind when introduced.
 - Depends on: [SPEC-OUT-001](#spec-out-001)
 - Governed by: [blueprint § 4.1 Ownership and memory](blueprint.md#41-ownership-and-memory)
 
@@ -2624,14 +2681,14 @@ constants, accept mappings, JSON text, bytes and paths, and release the interpre
 during computation.
 
 - Priority: MUST
-- Status: Partial. `crates/caekit-py/src/lib.rs` releases the interpreter lock with
-  `py.detach` (lines 47 and 57), and the package accepts each input form
-  ([python.md](../python.md)); no test shows that a solve runs while another thread holds
-  the interpreter.
+- Status: Implemented. Both entry points use `py.detach` and the installed-package
+  tests cover every documented input form. A second Python thread runs between
+  profiler entry and return events of the native solve.
 - Rationale: Python users and threaded hosts.
 - Acceptance: the package tests cover each input form
-  (`test_every_input_form_gives_the_same_report`); a solve from a second thread while the
-  first thread holds the interpreter is to be tested.
+  (`test_every_input_form_gives_the_same_report`) and show that another thread can
+  obtain the interpreter lock before the solve returns
+  (`test_solve_releases_the_interpreter_lock`).
 - Verified by: `crates/caekit-py/tests/test_caekit.py`.
 - Depends on: [SPEC-BND-001](#spec-bnd-001)
 - Governed by: [blueprint § 3.2 Crate responsibilities](blueprint.md#32-crate-responsibilities)
@@ -2840,10 +2897,10 @@ problem type, and solve methods on the problem type.
 | Sibling document | [SPEC-DOC-011](#spec-doc-011) |
 
 - Priority: MUST
-- Status: Partial. `scripts/check-docs.mjs` checks the physics-kind row (page, example,
-  library test, digest, CLI test, verifier entry, README rows) and, for the output row,
-  that `docs/model.md` names the variant; the other rows are held by review against
-  [AGENTS.md](../../AGENTS.md).
+- Status: Implemented. `scripts/check-docs.mjs` checks the physics-kind and output
+  rows and that the contributor rules link this checklist. [AGENTS.md](../../AGENTS.md)
+  requires review of every other applicable row and a record of checks and evidence
+  in the change description.
 - Rationale: an extension without its evidence and pages is not done.
 - Acceptance: Now: `node scripts/check-docs.mjs` passes for the physics-kind and output
   rows; every other row is decided by review against this table. Each further row moves
@@ -2910,11 +2967,16 @@ code MAY be used with a citation in [provenance.md](../provenance.md).
 method → paper or book → licence of any consulted code → verifying test.
 
 - Priority: SHOULD
-- Status: Partial. The page records dependencies and input sources, not methods.
+- Status: Implemented. [provenance.md › Methods and cited sources](../provenance.md#methods-and-cited-sources)
+  has one row per method with where it is used, its source, a DOI, ISBN or URL and the verifying
+  test, and states that no source code of a cited work was consulted. Both algorithm
+  identifiers of the stage table, `jacobi_preconditioned_conjugate_gradient` and
+  `partitioned_gauss_seidel`, have a row.
 - Rationale: auditable licence hygiene as the numerics grow.
 - Acceptance: every algorithm identifier in the stage table has a row.
-- Verified by: a `scripts/check-docs.mjs` extension comparing algorithm identifiers with the
-  table.
+- Verified by: `node scripts/check-docs.mjs`, which requires every algorithm that the solver
+  crates report to be in the stage table of `docs/model.md` and the first column of a methods
+  row, and every row to name an identifier and a verifying test.
 - Depends on: —
 - Governed by: [blueprint § 2. Invariants](blueprint.md#2-invariants)
 
@@ -2941,13 +3003,19 @@ command that reproduces it or its derivation; expected or remembered values MUST
 written.
 
 - Priority: MUST
-- Status: Partial. The rule is in [AGENTS.md](../../AGENTS.md) §4 and held by review; no
-  check exists.
+- Status: Implemented for the "Now" acceptance. On 2026-11-21 every number on the seven
+  physics pages, in the physics tables of `README.md` and `crates/caekit/README.md` and in
+  `docs/model.md` was reviewed: each sits next to the command that reproduces it or its
+  derivation, and every refinement-study command was run once with matching output.
+  `node scripts/check-docs.mjs` checks the mechanical part: every refinement-study section
+  names a `cargo test` command whose file and test filters exist. The multimaterial solve-time
+  and peak-RSS columns are labelled as measured on Linux and not repeated. The
+  "Once SPEC-VER-007" clause waits for that requirement.
 - Rationale: documentation is evidence, not narrative.
 - Acceptance: Now: each number on a physics page is next to a command or derivation
   (review of every page in `docs/physics/`). Once [SPEC-VER-007](#spec-ver-007): the values
   of the reference catalogue are generated from tests.
-- Verified by: review; [SPEC-VER-007](#spec-ver-007).
+- Verified by: review; `node scripts/check-docs.mjs`; [SPEC-VER-007](#spec-ver-007).
 - Depends on: —
 - Governed by: [blueprint § 11. Verification method](blueprint.md#11-verification-method)
 
@@ -2957,12 +3025,23 @@ written.
 where it is set; a tolerance MUST NOT be weakened to make a test pass.
 
 - Priority: MUST
-- Status: Partial. Held by review; for example the unit floors of
-  `scripts/verify-reference-cases.mjs` share one comment and state no reason per unit.
+- Status: Implemented. Every tolerance, bound and allowance in the tests of `caekit` and
+  `caekit-cli`, the numerics, mesh, thermal, mechanics and fluids code and tests, the library
+  default settings, the Python and WebAssembly tests, the executed README examples and
+  `scripts/verify-reference-cases.mjs` is a named constant with rustdoc or has a comment on its
+  line or the line above that states its reason: a scale, a derivation or a measured margin with
+  how it was measured. Each unit floor of the reference comparison states its scale `S` and its
+  margin `k`. No value was loosened; one unexercised allowance (`THIN_BAR_STRESS_TOL_PA`) was
+  tightened to the rule of its file. Weakest reasons, recorded where they are set: the
+  stagnation constants 0.75 and 8 of `pcg` have no derivation (they decide only when a hopeless
+  solve stops), the margins `k` of the unit floors follow no single rule, and the measured margins
+  were taken natively on Windows only.
 - Rationale: an unexplained tolerance hides a defect.
 - Acceptance: every numeric literal used as a tolerance has a comment or a named constant
   with rustdoc stating the reason.
-- Verified by: review.
+- Verified by: review; `node scripts/check-docs.mjs` for the tests of `crates/caekit` and
+  `crates/caekit-cli` and for `scripts/verify-reference-cases.mjs` (its scope is stated in the
+  script).
 - Depends on: —
 - Governed by: [blueprint § 11. Verification method](blueprint.md#11-verification-method)
 
@@ -2973,8 +3052,12 @@ same change, as the change table of [AGENTS.md](../../AGENTS.md) lists.
 
 - Priority: MUST
 - Status: Implemented. `scripts/check-docs.mjs` enforces the checkable part: kinds,
-  outputs, crates, versions, links, anchors, required files, and that every page with Rust
-  examples is included from `docs/doctests.rs`; `cargo test` compiles those examples.
+  outputs, crates, versions, links, anchors, required files, that every page with Rust
+  examples is included from `docs/doctests.rs` (`cargo test` compiles those examples), that
+  MUST statuses match the summary, that test tolerances state a reason
+  ([SPEC-EVD-002](#spec-evd-002)), that the provenance methods table covers every reported
+  algorithm ([SPEC-EXT-009](#spec-ext-009)) and that every refinement study names a command
+  ([SPEC-EVD-001](#spec-evd-001)).
 - Rationale: one fact, one home, always true.
 - Acceptance: `node scripts/check-docs.mjs` passes.
 - Verified by: `scripts/check-docs.mjs` in CI.
@@ -3050,8 +3133,16 @@ against the primary source; inputs of reference models are synthetic unless the 
 otherwise.
 
 - Priority: MUST
-- Status: Partial. Input provenance is recorded; method citations are on physics pages but
-  not collected ([SPEC-EXT-009](#spec-ext-009)).
+- Status: Partial. [provenance.md › Methods and cited sources](../provenance.md#methods-and-cited-sources)
+  collects every cited method with a DOI, ISBN or resolving URL, the physics pages cite through
+  it, and the page records how each was confirmed: every DOI against its Crossref record on
+  2026-11-21. Missing: the book-length and paywalled sources (Saad, Higham, Ciarlet, Hetnarski
+  and Eslami, Shah and London, Bergman et al., Liu and Joe, Roache, Celik et al., Eça and
+  Hoekstra, Stern et al., Grundmann and Möller, Duffy, Timoshenko and Goodier) are confirmed by
+  their bibliographic record, not against the primary text; the Liu and Joe formula was matched
+  against secondary sources; the Bergman et al. ISBN comes from retailer listings; von Mises
+  (1913) is cited through its NASA translation. Implemented once the primary texts are read,
+  or a maintainer accepts record-level confirmation.
 - Rationale: a wrong citation or a remembered value is unverifiable.
 - Acceptance: every citation has a DOI, a standard number or a URL that resolves.
 - Verified by: review.
@@ -3164,9 +3255,12 @@ closed balance as proof of correctness or a converged run as validation, and the
 documentation MUST say so.
 
 - Priority: MUST
-- Status: Partial. The contract exists ([SPEC-CNV-004](#spec-cnv-004),
-  [SPEC-CNV-005](#spec-cnv-005), [model.md](../model.md)); no page addresses automated
-  clients directly.
+- Status: Implemented. [model.md › Automated clients](../model.md#automated-clients), next to
+  the outcome table of [SPEC-CNV-006](#spec-cnv-006), tells clients to accept a result only when
+  `stop_reason` is `converged` (CLI exit code 0, or a returned report in Python and
+  WebAssembly), treats exit codes 2 and 1 as failures, says that a closed balance is not proof
+  of correctness (linking the [SPEC-CON-006](#spec-con-006) derivation) and that a converged run
+  is not validation.
 - Rationale: a plausible number from a failed or mis-posed run is the typical error of
   automated use; withholding fields makes the safe path the only path.
 - Acceptance: the page of [SPEC-CNV-006](#spec-cnv-006) has a paragraph for automated clients
@@ -3227,10 +3321,10 @@ not run, report a failed test with its output, and never weaken a test or tolera
 pass. A change that addresses no requirement of this page is bound by AGENTS.md alone.
 
 - Priority: MUST
-- Status: Partial. [AGENTS.md](../../AGENTS.md) binds human and automated contributors
-  alike, but neither its §1 reading table nor its §3 change table refers to this page, so a
-  contributor who starts from AGENTS.md does not reach the selection and status rules
-  here.
+- Status: Implemented. [AGENTS.md](../../AGENTS.md) links the selection and
+  completion rules and requires status, summary and commit-body updates.
+  `scripts/check-docs.mjs` checks the links and the agreement of MUST entries
+  with the summary.
 - Rationale: the same evidence rules for every contributor; rules belong where the
   repository directs contributors first.
 - Acceptance: the §1 table of AGENTS.md links this page for "what to build next and how to
@@ -3291,16 +3385,16 @@ them is either rejected or comes with a change to this section and its reason. T
 Maintained by hand from the entries above; an entry's own block is authoritative. Conditional
 MUSTs bind only when their construct exists.
 
-82 entries have the priority MUST: 70 unconditional (48 Implemented, 21 Partial, 1 Planned) and 12 conditional (1 Implemented because its construct exists, 11 Planned). Entries whose priority is split (for example MUST for a synchronous solve and MAY for an abort) are listed under the stronger keyword. MUST clauses inside SHOULD and MAY entries bind with their entry's construct ([Keywords](#keywords)) and are not listed.
+82 entries have the priority MUST: 70 unconditional (69 Implemented, 1 Partial) and 12 conditional (1 Implemented because its construct exists, 11 Planned). Entries whose priority is split (for example MUST for a synchronous solve and MAY for an abort) are listed under the stronger keyword. MUST clauses inside SHOULD and MAY entries bind with their entry's construct ([Keywords](#keywords)) and are not listed.
 
 | ID | Area | Requirement | Binds | Status |
 | --- | --- | --- | --- | --- |
-| [SPEC-DOC-001](#spec-doc-001) | Document contract | Strict, versioned model document | Unconditional | Partial |
-| [SPEC-DOC-002](#spec-doc-002) | Document contract | SI units with unit-suffixed keys | Unconditional | Partial |
+| [SPEC-DOC-001](#spec-doc-001) | Document contract | Strict, versioned model document | Unconditional | Implemented |
+| [SPEC-DOC-002](#spec-doc-002) | Document contract | SI units with unit-suffixed keys | Unconditional | Implemented |
 | [SPEC-DOC-003](#spec-doc-003) | Document contract | Model digest | Unconditional | Implemented |
-| [SPEC-DOC-004](#spec-doc-004) | Document contract | Opt-in invariance of version 1 | Unconditional | Partial |
-| [SPEC-DOC-005](#spec-doc-005) | Document contract | Input errors name their path | Unconditional | Partial |
-| [SPEC-DOC-006](#spec-doc-006) | Document contract | No panic from any input | Unconditional | Partial |
+| [SPEC-DOC-004](#spec-doc-004) | Document contract | Opt-in invariance of version 1 | Unconditional | Implemented |
+| [SPEC-DOC-005](#spec-doc-005) | Document contract | Input errors name their path | Unconditional | Implemented |
+| [SPEC-DOC-006](#spec-doc-006) | Document contract | No panic from any input | Unconditional | Implemented |
 | [SPEC-DOC-007](#spec-doc-007) | Document contract | Typed, hashed solver settings | Unconditional | Implemented |
 | [SPEC-DOC-009](#spec-doc-009) | Document contract | Version 2 only with a migration | Conditional | Planned |
 | [SPEC-DOC-013](#spec-doc-013) | Document contract | Parameter studies outside the kernel | Unconditional (studies: MAY) | Implemented |
@@ -3313,19 +3407,19 @@ MUSTs bind only when their construct exists.
 | [SPEC-DIS-001](#spec-dis-001) | Discretization | Discretization and formal order stated per kind | Unconditional | Implemented |
 | [SPEC-DIS-003](#spec-dis-003) | Discretization | Positive-weight quadrature with exactness tests | Conditional | Planned |
 | [SPEC-DIS-004](#spec-dis-004) | Discretization | Integration degree per form | Conditional | Planned |
-| [SPEC-DIS-006](#spec-dis-006) | Discretization | Deterministic DOF and entity numbering | Unconditional | Partial |
+| [SPEC-DIS-006](#spec-dis-006) | Discretization | Deterministic DOF and entity numbering | Unconditional | Implemented |
 | [SPEC-DIS-007](#spec-dis-007) | Discretization | Dirichlet conditions by symmetric elimination | Unconditional | Implemented |
 | [SPEC-DIS-008](#spec-dis-008) | Discretization | Mechanisms are rejected, never regularized | Unconditional | Implemented |
 | [SPEC-DIS-009](#spec-dis-009) | Discretization | Mass lumping rule | Conditional | Planned |
 | [SPEC-DIS-013](#spec-dis-013) | Discretization | Error estimates are labelled | Conditional | Planned |
 | [SPEC-SOL-001](#spec-sol-001) | Solvers | Numerics knows no physics and no mesh | Unconditional | Implemented |
 | [SPEC-SOL-002](#spec-sol-002) | Solvers | The version 1 default algorithm is frozen | Unconditional | Implemented |
-| [SPEC-SOL-005](#spec-sol-005) | Solvers | Conjugate gradient only on SPD systems | Unconditional | Partial |
+| [SPEC-SOL-005](#spec-sol-005) | Solvers | Conjugate gradient only on SPD systems | Unconditional | Implemented |
 | [SPEC-SOL-012](#spec-sol-012) | Solvers | Exact Jacobians with a Taylor test | Conditional | Planned |
 | [SPEC-CNV-001](#spec-cnv-001) | Convergence and failure | One convergence record per stage | Unconditional | Implemented |
 | [SPEC-CNV-002](#spec-cnv-002) | Convergence and failure | Acceptance only on a recomputed true residual | Unconditional | Implemented |
 | [SPEC-CNV-003](#spec-cnv-003) | Convergence and failure | Closed stop-reason set | Unconditional | Implemented |
-| [SPEC-CNV-004](#spec-cnv-004) | Convergence and failure | The first non-converged stage stops the run and withholds results | Unconditional | Partial |
+| [SPEC-CNV-004](#spec-cnv-004) | Convergence and failure | The first non-converged stage stops the run and withholds results | Unconditional | Implemented |
 | [SPEC-CNV-005](#spec-cnv-005) | Convergence and failure | Exit codes and host mapping | Unconditional | Implemented |
 | [SPEC-CNV-009](#spec-cnv-009) | Convergence and failure | Non-finite values never reach a report | Unconditional | Implemented |
 | [SPEC-CNV-010](#spec-cnv-010) | Convergence and failure | Thresholds use fixed or physical scales | Unconditional | Implemented |
@@ -3338,36 +3432,36 @@ MUSTs bind only when their construct exists.
 | [SPEC-CON-003](#spec-con-003) | Conservation | Balances from the discrete fluxes the method conserves | Unconditional | Implemented |
 | [SPEC-CON-008](#spec-con-008) | Conservation | Transient balances use the scheme's weights | Conditional | Planned |
 | [SPEC-VER-001](#spec-ver-001) | Verification | Independent analytical reference per kind | Unconditional | Implemented |
-| [SPEC-VER-002](#spec-ver-002) | Verification | Refinement study with the expected order | Unconditional | Partial |
-| [SPEC-VER-003](#spec-ver-003) | Verification | Order studies that can fail | Unconditional | Partial |
+| [SPEC-VER-002](#spec-ver-002) | Verification | Refinement study with the expected order | Unconditional | Implemented |
+| [SPEC-VER-003](#spec-ver-003) | Verification | Order studies that can fail | Unconditional | Implemented |
 | [SPEC-VER-012](#spec-ver-012) | Verification | No validation claims | Unconditional | Implemented |
 | [SPEC-VER-014](#spec-ver-014) | Verification | Numerics tests never claim convergence wrongly | Unconditional | Implemented |
 | [SPEC-DET-001](#spec-det-001) | Determinism | Library crates are pure computation | Unconditional | Implemented |
 | [SPEC-DET-002](#spec-det-002) | Determinism | Native and WASI agree on every reference model | Unconditional | Implemented |
-| [SPEC-DET-003](#spec-det-003) | Determinism | Only IEEE-exact operations in decision and result paths | Unconditional | Partial |
-| [SPEC-DET-004](#spec-det-004) | Determinism | Determinism enforced by Clippy | Unconditional | Planned |
-| [SPEC-DET-005](#spec-det-005) | Determinism | Cross-target comparison of decisions | Unconditional | Partial |
+| [SPEC-DET-003](#spec-det-003) | Determinism | Only IEEE-exact operations in decision and result paths | Unconditional | Implemented |
+| [SPEC-DET-004](#spec-det-004) | Determinism | Determinism enforced by Clippy | Unconditional | Implemented |
+| [SPEC-DET-005](#spec-det-005) | Determinism | Cross-target comparison of decisions | Unconditional | Implemented |
 | [SPEC-DET-006](#spec-det-006) | Determinism | Fixed reduction and accumulation order | Unconditional | Implemented |
 | [SPEC-DET-007](#spec-det-007) | Determinism | Library crates choose no backend | Unconditional | Implemented |
 | [SPEC-DET-008](#spec-det-008) | Determinism | Deterministic tie-breaks, start vectors and seeds | Conditional | Planned |
 | [SPEC-DET-009](#spec-det-009) | Determinism | Discrete simulated time | Conditional | Planned |
 | [SPEC-OUT-001](#spec-out-001) | Outputs and interoperability | Exactly the requested quantities, with units and locations | Unconditional | Implemented |
 | [SPEC-OUT-002](#spec-out-002) | Outputs and interoperability | Output vocabulary order is frozen | Unconditional | Implemented |
-| [SPEC-OUT-003](#spec-out-003) | Outputs and interoperability | Report metadata | Unconditional | Partial |
-| [SPEC-OUT-004](#spec-out-004) | Outputs and interoperability | Bounded report size | Unconditional (transient and nested clauses: conditional) | Partial |
+| [SPEC-OUT-003](#spec-out-003) | Outputs and interoperability | Report metadata | Unconditional | Implemented |
+| [SPEC-OUT-004](#spec-out-004) | Outputs and interoperability | Bounded report size | Unconditional (transient and nested clauses: conditional) | Implemented |
 | [SPEC-OUT-005](#spec-out-005) | Outputs and interoperability | Translators are pure byte functions | Conditional | Planned |
 | [SPEC-BND-001](#spec-bnd-001) | Bindings | One kernel, physics-free surfaces | Unconditional | Implemented |
-| [SPEC-BND-002](#spec-bnd-002) | Bindings | Python surface | Unconditional | Partial |
+| [SPEC-BND-002](#spec-bnd-002) | Bindings | Python surface | Unconditional | Implemented |
 | [SPEC-BND-003](#spec-bnd-003) | Bindings | WebAssembly surface | Unconditional | Implemented |
 | [SPEC-BND-004](#spec-bnd-004) | Bindings | Host mapping of outcomes | Unconditional | Implemented |
 | [SPEC-BND-005](#spec-bnd-005) | Bindings | `unsafe` confined to binding macros | Unconditional | Implemented |
 | [SPEC-EXT-001](#spec-ext-001) | Extensibility | Dependencies point downward | Unconditional | Implemented |
-| [SPEC-EXT-005](#spec-ext-005) | Extensibility | Extension checklists | Unconditional | Partial |
+| [SPEC-EXT-005](#spec-ext-005) | Extensibility | Extension checklists | Unconditional | Implemented |
 | [SPEC-EXT-007](#spec-ext-007) | Extensibility | Dependency admission | Unconditional | Implemented |
 | [SPEC-EXT-008](#spec-ext-008) | Extensibility | Licence boundary for code | Unconditional | Implemented |
 | [SPEC-EXT-010](#spec-ext-010) | Extensibility | Minimum Rust version policy | Unconditional | Implemented |
-| [SPEC-EVD-001](#spec-evd-001) | Documentation evidence | Every number is measured or derived | Unconditional | Partial |
-| [SPEC-EVD-002](#spec-evd-002) | Documentation evidence | Tolerances state their reason | Unconditional | Partial |
+| [SPEC-EVD-001](#spec-evd-001) | Documentation evidence | Every number is measured or derived | Unconditional | Implemented |
+| [SPEC-EVD-002](#spec-evd-002) | Documentation evidence | Tolerances state their reason | Unconditional | Implemented |
 | [SPEC-EVD-003](#spec-evd-003) | Documentation evidence | Documentation in the same change | Unconditional | Implemented |
 | [SPEC-EVD-004](#spec-evd-004) | Documentation evidence | Examples are executed | Unconditional | Implemented |
 | [SPEC-EVD-006](#spec-evd-006) | Documentation evidence | Numerical lessons are recorded | Unconditional | Implemented |
@@ -3375,8 +3469,8 @@ MUSTs bind only when their construct exists.
 | [SPEC-EVD-008](#spec-evd-008) | Documentation evidence | Citations are confirmed at the source | Unconditional | Partial |
 | [SPEC-EVD-009](#spec-evd-009) | Documentation evidence | Changelog entry for user-observable changes | Unconditional | Implemented |
 | [SPEC-EVD-010](#spec-evd-010) | Documentation evidence | Release only from a verified commit | Unconditional | Implemented |
-| [SPEC-AIA-004](#spec-aia-004) | Automation by AI assistants | Acceptance by machine-readable status only | Unconditional | Partial |
-| [SPEC-AIA-008](#spec-aia-008) | Automation by AI assistants | Implementation discipline | Unconditional | Partial |
+| [SPEC-AIA-004](#spec-aia-004) | Automation by AI assistants | Acceptance by machine-readable status only | Unconditional | Implemented |
+| [SPEC-AIA-008](#spec-aia-008) | Automation by AI assistants | Implementation discipline | Unconditional | Implemented |
 
 ## Choosing the next requirement
 

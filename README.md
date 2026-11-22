@@ -73,7 +73,7 @@ console.log(report.quantities.end_displacement.values.tip, "m");
 | `physics.kind` | Solves | Reference result of the saved model |
 | --- | --- | --- |
 | [`axial_bar`](docs/physics/axial-bar.md) | Static small-strain axial deformation of a uniform bar | 0.05 mm extension under 1 kN |
-| [`laminar_channel`](docs/physics/laminar-channel.md) | Steady, fully developed laminar flow between parallel plates | 2.4 Pa pressure loss at a Reynolds number of 200 |
+| [`laminar_channel`](docs/physics/laminar-channel.md) | Steady, fully developed laminar flow between parallel plates | 2.4 Pa analytical pressure loss (2.395 Pa solved) at a Reynolds number of 200 |
 | [`cooling_channel`](docs/physics/cooling-channel.md) | Laminar coolant heated through a conductive wall on independent meshes | Outlet temperature and heat duty of the continuous thermal circuit |
 | [`elastic_solid`](docs/physics/elastic-solid.md) | Three-dimensional isotropic linear elasticity on tetrahedra | 0.1 mm extension, −2 MN reaction and 100 J strain energy |
 | [`heat_conduction`](docs/physics/heat-conduction.md) | Steady isotropic heat conduction in a tetrahedral solid | 350 K at the centre, 20,000 W/m² along +x, ±200 W at the ends |
@@ -81,7 +81,9 @@ console.log(report.quantities.end_displacement.values.tip, "m");
 | [`thermoelastic_solid`](docs/physics/thermoelastic-solid.md) | Heat conduction followed by thermal-expansion elasticity | −120 MPa axial stress and opposing 12 kN reactions |
 
 Each page states the assumptions, the equations, the discretization and the analytical
-reference that the tests compare against.
+reference that the tests compare against. Each value of the last column is derived on the
+linked page from the inputs of the saved model, and running that model measures it:
+`cargo run --locked -- run examples/<kind>.json`.
 
 ## Scope and limits
 
@@ -125,7 +127,7 @@ the same public Rust API. [Architecture](docs/ARCHITECTURE.md)
 | `caekit-fluids` | Laminar momentum, mass flow and pressure recovery |
 | `caekit-thermal` | Tetrahedral solid conduction, wall conduction and coolant energy transport |
 | `caekit-mesh` | Meshes, geometry revisions, regions and mesh quality |
-| `caekit-numerics` | Sparse systems, iterative solves and convergence histories |
+| `caekit-numerics` | Sparse systems, iterative solves, convergence histories and solution verification |
 | `caekit-types` | Shared physical input and result values and diagnostics |
 
 The workspace selects the API and command-line packages by default at the repository
@@ -153,6 +155,7 @@ rustup target add --toolchain stable wasm32-unknown-unknown wasm32-wasip1
 | Job | Command |
 | --- | --- |
 | Native tests on Linux, macOS and Windows | `cargo +stable test --workspace --exclude caekit-py --exclude caekit-wasm --locked` |
+| Bounded model mutations | `cargo +stable test --locked -p caekit --test model_mutations -- --ignored` |
 | Rust MSRV | `cargo +1.85.0 test --workspace --exclude caekit-py --exclude caekit-wasm --locked` and `cargo +1.85.0 check -p caekit-py -p caekit-wasm --locked` |
 | Rustfmt | `cargo +stable fmt --all -- --check` |
 | Clippy | `cargo +stable clippy --workspace --all-targets --locked -- -D warnings` |
@@ -185,7 +188,9 @@ node scripts/verify-reference-cases.mjs target/debug/caekit target/wasm32-wasip1
 ```
 
 The reference check reports CLI exit errors and verifies convergence, the analytical
-benchmarks, model identity, requested outputs, units and sample positions. Numeric
+benchmarks, model identity, requested outputs, units and sample positions. It requires
+equal stage iteration counts and stop reasons and prints report digests with platform
+fields normalized, along with exact residual-history agreement. Numeric
 comparisons use a unit-specific absolute tolerance near zero and a relative tolerance of
 `1e-10` at larger magnitudes. Failed comparisons identify the model, quantity, expected
 value and measured value.

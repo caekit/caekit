@@ -47,9 +47,10 @@ fn thermoelastic_solid() {
 
 #[test]
 fn invalid_thermal_boundary_inputs_use_exit_one() {
-    for (conditions, message) in [
+    for (conditions, field, message) in [
         (
             json!([{"kind": "heat_flux", "region": "x0", "inward_heat_flux_w_m2": 1000}]),
+            "physics.thermal.boundary_conditions",
             "determine absolute temperature",
         ),
         (
@@ -57,6 +58,7 @@ fn invalid_thermal_boundary_inputs_use_exit_one() {
                 {"kind": "temperature", "region": "x0", "temperature_k": 300},
                 {"kind": "temperature", "region": "y0", "temperature_k": 400}
             ]),
+            "physics.thermal.boundary_conditions[1].temperature_k",
             "conflicting prescribed temperatures at vertex",
         ),
     ] {
@@ -68,6 +70,7 @@ fn invalid_thermal_boundary_inputs_use_exit_one() {
             assert_exit(&output, 1, command);
             assert!(output.stdout.is_empty());
             let error = String::from_utf8_lossy(&output.stderr);
+            assert!(error.contains(&format!("{field}:")), "{error}");
             assert!(error.contains(message), "{error}");
         }
     }
@@ -76,40 +79,51 @@ fn invalid_thermal_boundary_inputs_use_exit_one() {
 #[test]
 fn invalid_volume_assignments_use_exit_one() {
     type Change = fn(&mut Value);
-    let changes: [(Change, &str); 7] = [
+    let changes: [(Change, &str, &str); 7] = [
         (
             |thermal| thermal["volume_regions"][0]["cells"] = json!([0, 1, 2, 3, 4]),
+            "volume_regions",
             "cell 5 has no volume region assignment",
         ),
         (
             |thermal| thermal["volume_regions"][1]["cells"] = json!([0, 6, 7, 8, 9, 10, 11]),
+            "volume_regions[1].cells[0]",
             "volume region \"right\" assigns cell 0, already assigned to \"left\"",
         ),
         (
             |thermal| thermal["volume_regions"][0]["cells"][0] = json!(99),
+            "volume_regions[0].cells[0]",
             "volume region \"left\" references invalid cell 99",
         ),
         (
             |thermal| thermal["volume_regions"][1]["name"] = json!("left"),
+            "volume_regions[1].name",
             "duplicate volume region name \"left\"",
         ),
         (
             |thermal| thermal["volume_regions"][1]["material_id"] = json!("missing"),
+            "volume_regions[1].material_id",
             "volume region \"right\" references unknown material \"missing\"",
         ),
         (
             |thermal| thermal["materials"][0]["thermal_conductivity_w_m_k"] = json!(-1),
-            "materials[0].thermal_conductivity_w_m_k: must be positive and finite",
+            "materials[0].thermal_conductivity_w_m_k",
+            "must be positive and finite",
         ),
         (
             |thermal| thermal["boundary_conditions"][0]["region"] = json!("left"),
+            "boundary_conditions[0].region",
             "unknown exterior region \"left\"",
         ),
     ];
-    for (change, message) in changes {
+    for (change, field, message) in changes {
         let mut model = fixture_json("multimaterial_heat_conduction.json");
         change(&mut model["physics"]["thermal"]);
-        assert_check_error(&TempModel::new(&model), message);
+        assert_check_error(
+            &TempModel::new(&model),
+            &format!("physics.thermal.{field}"),
+            message,
+        );
     }
 
     let mut model = fixture_json("multimaterial_heat_conduction.json");
@@ -119,6 +133,7 @@ fn invalid_volume_assignments_use_exit_one() {
         .push(json!({"name": "interior", "faces": [[4, 5, 7]]}));
     assert_check_error(
         &TempModel::new(&model),
+        "physics.mesh.boundary_regions[6].faces[0]",
         "region references an unknown, interior, or already assigned face",
     );
 }
@@ -126,24 +141,38 @@ fn invalid_volume_assignments_use_exit_one() {
 #[test]
 fn unreadable_conductivity_identifies_the_material_field() {
     let model = std::fs::read_to_string(fixture("multimaterial_heat_conduction.json")).unwrap();
-    for token in ["1e400", "NaN", "null"] {
+    for (token, field, message) in [
+        (
+            "1e400",
+            "physics.thermal.materials[0].thermal_conductivity_w_m_k",
+            "number out of range",
+        ),
+        (
+            "NaN",
+            "physics.thermal.materials[0].thermal_conductivity_w_m_k",
+            "expected value",
+        ),
+        (
+            "null",
+            "invalid model JSON: thermal_conductivity_w_m_k",
+            "invalid type",
+        ),
+    ] {
         let invalid = model.replacen(
             "\"thermal_conductivity_w_m_k\": 10",
             &format!("\"thermal_conductivity_w_m_k\": {token}"),
             1,
         );
-        assert_check_error(
-            &TempModel::from_bytes(invalid.as_bytes()),
-            "thermal_conductivity_w_m_k",
-        );
+        assert_check_error(&TempModel::from_bytes(invalid.as_bytes()), field, message);
     }
 }
 
-fn assert_check_error(path: &TempModel, message: &str) {
+fn assert_check_error(path: &TempModel, field: &str, message: &str) {
     let output = run("check", &path.0);
     assert_exit(&output, 1, "check");
     assert!(output.stdout.is_empty());
     let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains(&format!("{field}:")), "{error}");
     assert!(error.contains(message), "{error}");
 }
 
@@ -158,7 +187,8 @@ fn unphysical_calculated_temperatures_use_exit_one() {
     assert!(output.stdout.is_empty());
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(
-        error.contains("solution must be above absolute zero"),
+        error.contains("solid temperature at vertex")
+            && error.contains("solution must be above absolute zero"),
         "{error}"
     );
 }
@@ -166,6 +196,8 @@ fn unphysical_calculated_temperatures_use_exit_one() {
 #[test]
 fn a_stage_iteration_limit_uses_exit_two_and_preserves_the_trace() {
     let settings = json!({
+        // The default tolerances written out; the limit of one iteration is what stops the stage
+        // before it reaches the 1e-10 relative threshold.
         "relative_residual_tolerance": 1e-10,
         "absolute_residual_tolerance": 0,
         "max_iterations": 1
@@ -221,6 +253,7 @@ fn a_stage_iteration_limit_uses_exit_two_and_preserves_the_trace() {
         for (index, (stage, &unit)) in report.convergence.iter().zip(units).enumerate() {
             assert_eq!(stage.residual_unit, unit);
             let (reason, within_tolerance) = if index == units.len() - 1 {
+                // The `max_iterations` of `settings`.
                 assert_eq!(stage.iterations, 1);
                 (StopReason::IterationLimit, false)
             } else {

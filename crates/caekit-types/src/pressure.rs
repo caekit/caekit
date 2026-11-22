@@ -60,7 +60,7 @@ impl Pressure {
     ///
     /// A gauge datum must be positive and finite, reported at `{path}.reference_absolute_pa`. For
     /// both variants the absolute pressure must be positive and finite, reported at
-    /// `{path}.absolute_pressure_pa`. `path` is the JSON path of this object and failures are
+    /// `{path}.value_pa`. `path` is the JSON path of this object and failures are
     /// [`Error::InvalidModel`].
     pub fn validate(self, path: &str) -> Result<(), Error> {
         if let Self::Gauge {
@@ -73,7 +73,7 @@ impl Pressure {
                 reference_absolute_pa,
             )?;
         }
-        positive(&format!("{path}.absolute_pressure_pa"), self.absolute_pa())
+        positive(&format!("{path}.value_pa"), self.absolute_pa())
     }
 }
 

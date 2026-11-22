@@ -90,16 +90,14 @@ try {
 }
 ```
 
-| `kind` | Thrown when |
-| --- | --- |
-| `invalid_model` | The model is not valid JSON, uses an unsupported schema version or fails validation |
-| `calculation` | The calculation leaves the finite binary64 range or cannot allocate its working memory |
-| `bad_argument` | The argument is not a model document |
+The `kind` of each outcome, `invalid_model`, `calculation` or `bad_argument`, is stated once
+for every surface in the [outcome table](model.md#run-outcomes).
 
 ## Runs that do not converge
 
-A run that stops without convergence is returned, not thrown. Read `stop_reason`. Such a
-report keeps the traces of the stages that ran and withholds physical fields and balances.
+Read `stop_reason` before you use a result: a run that stops without convergence is
+returned, not thrown. The [outcome table](model.md#run-outcomes) says what such a report
+holds, and [Automated clients](model.md#automated-clients) says when to accept a result.
 
 ```js
 import { readFileSync } from "node:fs";

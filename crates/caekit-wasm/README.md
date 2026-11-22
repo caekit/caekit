@@ -51,15 +51,17 @@ const report = solve({
 console.assert(report.stop_reason === "converged");
 // F L / (E A) = 1000 N * 1 m / (200e9 Pa * 1e-4 m^2) = 5e-5 m
 const extension = report.quantities.end_displacement.values.tip;
+// Linear elements reproduce the uniform strain exactly, so only the solve and rounding remain;
+// 1e-13 m is 2e-9 of the extension, the TIP_DISPLACEMENT_TOL_M of crates/caekit/tests/axial_bar.rs.
 console.assert(Math.abs(extension - 5e-5) < 1e-13);
 console.log(`extension ${extension.toExponential(3)} m, solver ${report.execution.solver_version}`);
 ```
 
 `solve` and `check` accept the model as JSON text, as a `Uint8Array` of UTF-8 JSON or as
-the parsed object. An invalid model throws an error with `name === "CaekitError"`,
-`kind === "invalid_model"` and the path of the offending field. A run that stops without
-convergence is returned, not thrown: read `report.stop_reason`. TypeScript declarations
-of the report are included.
+the parsed object. Read `report.stop_reason` before you use a result: a run that stops
+without convergence is returned, not thrown. What each outcome returns or throws is in the
+[outcome table](https://github.com/caekit/caekit/blob/master/docs/model.md#run-outcomes).
+TypeScript declarations of the report are included.
 
 ## Documentation
 

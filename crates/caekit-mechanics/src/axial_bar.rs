@@ -184,7 +184,7 @@ impl AxialBar {
             let node = self
                 .mesh
                 .endpoint(boundary.region())
-                .expect("validated endpoint");
+                .expect("validated bar boundary condition names a mesh endpoint");
             match boundary {
                 BarBoundary::Displacement { value_m, .. } => prescribed[node] = Some(*value_m),
                 BarBoundary::Force { value_n, .. } => loads[node] = *value_n,

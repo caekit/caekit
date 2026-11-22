@@ -54,14 +54,19 @@ assert report["stop_reason"] == "converged"
 
 # F L / (E A) = 1000 N * 1 m / (200e9 Pa * 1e-4 m^2) = 5e-5 m
 extension = report["quantities"]["end_displacement"]["values"]["tip"]
+# Linear elements reproduce the uniform strain exactly, so only the solve and rounding remain;
+# 1e-13 m is 2e-9 of the extension, the TIP_DISPLACEMENT_TOL_M of crates/caekit/tests/axial_bar.rs.
 assert abs(extension - 5e-5) < 1e-13
 print(f"extension {extension:.3e} m, solver {report['execution']['solver_version']}")
 ```
 
 `solve` and `check` accept the model as a mapping, as JSON text, as UTF-8 JSON bytes or as
-a `pathlib.Path` naming a file. An invalid model raises `caekit.InvalidModelError` with the
-path of the offending field. A run that stops without convergence is returned, not raised:
-read `report["stop_reason"]`.
+a `pathlib.Path` naming a file. Read `report["stop_reason"]` before you use a result: a run
+that stops without convergence is returned, not raised. What each outcome returns or raises
+is in the
+[outcome table](https://github.com/caekit/caekit/blob/master/docs/model.md#run-outcomes).
+
+Both entry points release the interpreter lock during native computation.
 
 ## Documentation
 

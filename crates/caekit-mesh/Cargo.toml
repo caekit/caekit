@@ -12,6 +12,7 @@ categories.workspace = true
 
 [dependencies]
 caekit-types.workspace = true
+libm.workspace = true
 serde.workspace = true
 
 [lints]

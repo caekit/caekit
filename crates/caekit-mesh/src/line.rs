@@ -25,6 +25,17 @@ impl GeometryRevision {
     }
 }
 
+/// Largest accepted distance of the Euclidean norm of an [`AxisFrame`] direction from one.
+///
+/// Dimensionless. Reason: rounding to binary64 moves the norm of a three-component vector by a few
+/// times 1.1e-16, so the bound is four orders above rounding. A direction that a person writes to
+/// 12 decimals has components off by at most 5e-13, which moves the norm by at most
+/// 5e-13 * sqrt(3) = 8.7e-13 (the first-order change is the sum of the components times their
+/// errors, largest for the diagonal direction), so such a direction is accepted. The frame is
+/// not renormalized, so the accepted deviation scales every position along the axis by at most
+/// one part in 1e12.
+const UNIT_DIRECTION_TOLERANCE: f64 = 1.0e-12;
+
 /// An oriented one-dimensional coordinate, embedded in the global Cartesian frame.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -46,11 +57,8 @@ impl AxisFrame {
         if self.origin_m.iter().any(|x| !x.is_finite()) {
             return Err(Error::invalid(path, "frame origin must be finite"));
         }
-        let norm = self
-            .direction
-            .iter()
-            .fold(0.0_f64, |norm, x| norm.hypot(*x));
-        if !norm.is_finite() || (norm - 1.0).abs() > 1.0e-12 {
+        let norm = crate::length(self.direction);
+        if !norm.is_finite() || (norm - 1.0).abs() > UNIT_DIRECTION_TOLERANCE {
             return Err(Error::invalid(
                 path,
                 "frame direction must be a unit vector",

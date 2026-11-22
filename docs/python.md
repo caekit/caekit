@@ -75,18 +75,15 @@ else:
     raise AssertionError("a negative length must be rejected")
 ```
 
-| Exception | Raised when |
-| --- | --- |
-| `caekit.InvalidModelError` | The model is not valid JSON, uses an unsupported schema version or fails validation |
-| `caekit.CalculationError` | The calculation leaves the finite binary64 range or cannot allocate its working memory |
-| `TypeError` | The argument is not one of the accepted forms |
-
-Both CAEKit exceptions derive from `caekit.CaekitError`.
+`caekit.InvalidModelError` and `caekit.CalculationError` derive from
+`caekit.CaekitError`. Which outcome raises which exception, and which returns a report, is
+stated once for every surface in the [outcome table](model.md#run-outcomes).
 
 ## Runs that do not converge
 
-A run that stops without convergence is returned, not raised. Read `stop_reason`. Such a
-report keeps the traces of the stages that ran and withholds physical fields and balances.
+Read `stop_reason` before you use a result: a run that stops without convergence is
+returned, not raised. The [outcome table](model.md#run-outcomes) says what such a report
+holds, and [Automated clients](model.md#automated-clients) says when to accept a result.
 
 ```python
 import json
@@ -125,5 +122,6 @@ python -m pytest crates/caekit-py/tests -q
 ```
 
 CI builds the wheel, installs it and runs the same tests. They solve every saved model,
-compare the analytical references and execute the `python` examples of this page, of the
-repository README and of the package README.
+check report and execution keys and compare the analytical references. They also check
+that another Python thread can run before the native solve returns. The tests execute the
+`python` examples of this page, of the repository README and of the package README.

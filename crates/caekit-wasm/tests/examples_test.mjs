@@ -6,6 +6,8 @@ import test from "node:test";
 import { check, solve, version } from "../npm/node/caekit_wasm.mjs";
 import { example, examples } from "./helpers.mjs";
 
+// The limits of the checks below are those of scripts/verify-reference-cases.mjs, where each is
+// derived and measured; the package runs the same solver code, so the same margins apply.
 function close(actual, expected, tolerance, label) {
   assert.ok(Math.abs(actual - expected) <= tolerance, `${label}: expected ${expected} ± ${tolerance}, measured ${actual}`);
 }
@@ -37,18 +39,23 @@ for (const { name, text, model } of examples) {
 
 test("analytical references", () => {
   const bar = solve(example("axial_bar").text);
+  // 2e-9 of the 5e-5 m extension and 8 times the algebraic error the solver threshold allows
+  // (1.3e-14 m); the exact P1 solution deviates by 6.8e-21 m.
   close(bar.quantities.end_displacement.values.tip, 5.0e-5, 1e-13, "axial bar extension (m)");
 
   const heat = solve(example("heat_conduction").text).quantities.boundary_heat_rate.values;
+  // 5e-11 of the 200 W boundary heat rate; the affine solution deviates by 1.1e-13 W.
   close(heat.x0, 200, 1e-8, "heat rate x0 (W)");
   close(heat.x1, -200, 1e-8, "heat rate x1 (W)");
 
   const [transfer, ...rest] = solve(example("multimaterial_heat_conduction").text).quantities.interface_heat_rate.values;
   assert.equal(rest.length, 0);
   assert.deepEqual([transfer.from_region, transfer.to_region], ["left", "right"]);
+  // 1e-9 of the 10 W transfer; the piecewise affine solution deviates by 0 W.
   close(transfer.value, 10, 1e-8, "interface transfer (W)");
 
   const heated = solve(example("thermoelastic_solid").text);
+  // 2.8e-9 of the 3.6 J restrained scale; the solution deviates by 8.9e-16 J.
   close(heated.quantities.elastic_energy.value, 3.6, 1e-8, "elastic energy (J)");
 });
 
@@ -94,6 +101,8 @@ test("a run that does not converge is returned, not thrown", () => {
   const { model } = example("elastic_solid");
   const report = solve({
     ...model,
+    // The default tolerances spelled out (the object needs all three keys); one iteration cannot
+    // reach the threshold, since the elastic_solid reference needs 12.
     linear_solver: { relative_residual_tolerance: 1e-10, absolute_residual_tolerance: 0, max_iterations: 1 },
   });
   assert.equal(report.stop_reason, "iteration_limit");

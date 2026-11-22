@@ -1,5 +1,8 @@
 //! Sparse linear methods and convergence reporting.
 
+pub mod fmath;
+pub mod verify;
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -10,6 +13,23 @@ use serde::{Deserialize, Serialize};
 /// `max(absolute_residual_tolerance, relative_residual_tolerance * ‖b‖₂)`, where `b` is the
 /// right-hand side of the solved system. In JSON all three keys are required when the object is
 /// given and unknown keys are rejected. The [`Default`] values are `1e-10`, `0` and `20000`.
+///
+/// Reasons of the defaults:
+///
+/// - Relative tolerance `1e-10`. The relative test bounds the algebraic error by `C` times the
+///   tolerance (`docs/design/blueprint.md` section 10.2), so `1e-10` stays under the 3.5e-3
+///   algebraic budget of a refinement study (section 11.2) for every amplification `C` up to
+///   3.5e7. It lies above the rounding
+///   floor `ε‖A‖‖x‖/‖b‖` of the reference models: every model of `examples/` converges with it
+///   (`cargo run -p caekit-cli -- run examples/<kind>.json`; the iteration counts are exact and
+///   at most 16 per stage).
+/// - Absolute tolerance `0`. An absolute residual in W or N has no mesh-independent meaning
+///   (the residual scale follows the mesh, `blueprint.md` section 10.2), so the default leaves
+///   the relative test in control.
+/// - Iteration limit `20000`. It is a guard against a run that does not terminate, not a
+///   convergence criterion. Conjugate gradient finishes in at most `n` iterations in exact
+///   arithmetic for `n` unknowns, and the reference models need at most 16 (same command as
+///   above), so the limit sits three orders of magnitude above what they use.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LinearSettings {
@@ -225,15 +245,21 @@ impl CsrMatrix {
     }
 
     /// Conservative binary64 rounding scale for computing b - A*x row by row.
+    ///
+    /// A row with `k` stored entries does `k` products, `k` additions of the running sum and
+    /// one subtraction from `b`, so `2k + 1` operations each add a relative error of at most
+    /// the unit roundoff `ε/2`. The bound `(2k + 1) ε (|b| + |A||x|)` therefore overstates the
+    /// first-order bound `γ_{2k+1}(|b| + |A||x|)` of Higham (2002) by the factor two that
+    /// replaces `ε/2` with `ε`.
     fn residual_roundoff_l2(&self, x: &[f64], rhs: &[f64]) -> f64 {
-        rhs.iter().enumerate().fold(0.0_f64, |bound, (row, b)| {
+        fmath::norm2(rhs.iter().enumerate().map(|(row, b)| {
             let indices = self.offsets[row]..self.offsets[row + 1];
             let operations = 2.0 * indices.len() as f64 + 1.0;
             let scale = indices.fold(b.abs(), |sum, i| {
                 sum + (self.entries[i] * x[self.columns[i]]).abs()
             });
-            bound.hypot(operations * f64::EPSILON * scale)
-        })
+            operations * f64::EPSILON * scale
+        }))
     }
 }
 
@@ -243,11 +269,28 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
 
 /// Returns the Euclidean norm of `values`, which is zero for an empty slice.
 ///
-/// The norm is accumulated with `f64::hypot` instead of summing squares, which avoids overflow and
-/// underflow of the squared entries.
+/// See [`fmath::norm2`] for scaling and non-finite inputs.
 pub fn norm(values: &[f64]) -> f64 {
-    values.iter().fold(0.0_f64, |norm, x| norm.hypot(*x))
+    fmath::norm2(values.iter().copied())
 }
+
+/// A verified correction counts as progress when it lowers the true residual below this fraction
+/// of the best true residual verified so far.
+///
+/// A heuristic with no derivation: its only job is to tell a stalled residual (ratio near one)
+/// from a converging one. It cannot cause a false verdict, because the stagnation stop also needs
+/// the true residual to lie below the rounding bound of
+/// [`CsrMatrix::residual_roundoff_l2`]. It only moves the iteration at which a hopeless solve
+/// stops; the unattainable single-unknown system of `tests/sparse_system.rs` stops after 10
+/// iterations (measured by solving it with a relative tolerance of 1e-20).
+const STAGNATION_PROGRESS_FACTOR: f64 = 0.75;
+
+/// Number of consecutive verified corrections without progress (see
+/// [`STAGNATION_PROGRESS_FACTOR`]) after which the rounding bound is consulted.
+///
+/// A heuristic with no derivation; it has the same role and the same safety argument as
+/// [`STAGNATION_PROGRESS_FACTOR`]: the rounding bound, not the count, decides the verdict.
+const STAGNATION_RESTART_LIMIT: u32 = 8;
 
 fn pcg(
     matrix: &CsrMatrix,
@@ -269,7 +312,8 @@ fn pcg(
     }
     let threshold = settings
         .absolute_residual_tolerance
-        .max(settings.relative_residual_tolerance * initial_norm);
+        .abs()
+        .max(settings.relative_residual_tolerance.abs() * initial_norm);
     stats.residual_threshold = Some(threshold);
     stats.residual_l2_history.push(initial_norm);
     if initial_norm <= threshold {
@@ -289,7 +333,7 @@ fn pcg(
     let mut residual_dot = dot(&residual, &preconditioned);
     let mut product = vec![0.0; rhs.len()];
     let mut restart_baseline = f64::INFINITY;
-    let mut unproductive_restarts = 0;
+    let mut unproductive_restarts = 0_u32;
 
     for iteration in 1..=settings.max_iterations {
         matrix.multiply(&direction, &mut product);
@@ -333,12 +377,12 @@ fn pcg(
                 break;
             }
             // Count complete correction attempts only after verifying the true residual.
-            if actual < 0.75 * restart_baseline {
+            if actual < STAGNATION_PROGRESS_FACTOR * restart_baseline {
                 restart_baseline = actual;
                 unproductive_restarts = 0;
             } else {
                 unproductive_restarts += 1;
-                if unproductive_restarts >= 8 {
+                if unproductive_restarts >= STAGNATION_RESTART_LIMIT {
                     let roundoff = matrix.residual_roundoff_l2(&x, rhs);
                     if roundoff.is_finite() && actual <= roundoff {
                         stats.final_true_residual_l2 = Some(actual);

@@ -67,6 +67,17 @@ pub struct ChannelGeometry {
     pub outlet_region: String,
 }
 
+/// Largest accepted magnitude of the dot product of the axial and transverse directions.
+///
+/// Dimensionless (the cosine of the angle between two directions that are unit to within
+/// 1e-12). Reason: it is the same bound as the unit-norm check of `AxisFrame` in `caekit-mesh`,
+/// four orders above the binary64 rounding of a three-term dot product of unit vectors (a few
+/// times 1.1e-16). Components written to 12 decimals are off by at most `ε = 5e-13`, which
+/// moves the dot product `a · b` by at most `(‖a‖₁ + ‖b‖₁) ε` to first order: `1e-12` for
+/// directions along the coordinate axes (`‖·‖₁ = 1`), which are accepted, and up to
+/// `2 √3 ε = 1.7e-12` for diagonal directions, which need a 13th decimal.
+const PERPENDICULAR_TOLERANCE: f64 = 1.0e-12;
+
 impl ChannelGeometry {
     fn validate(&self, path: &str) -> Result<(), Error> {
         self.identity.validate(&format!("{path}.identity"))?;
@@ -83,7 +94,7 @@ impl ChannelGeometry {
             .zip(self.transverse_direction)
             .map(|(a, b)| a * b)
             .sum();
-        if projection.abs() > 1.0e-12 {
+        if projection.abs() > PERPENDICULAR_TOLERANCE {
             return Err(Error::invalid(path, "channel axes must be perpendicular"));
         }
         positive(&format!("{path}.length_m"), self.length_m)?;

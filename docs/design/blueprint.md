@@ -111,12 +111,12 @@ Each has an enforcement point; an invariant without one is a wish.
 | INV-01 | `solve(model)` is a pure function of the model bytes and the crate version. Library crates use no threads, clocks, random numbers, environment or file access | `clippy.toml` disallowed methods and types (planned, S0.1, [section 12.2](#122-rules-and-enforcement)); a script that runs `cargo tree --locked -e normal --target wasm32-unknown-unknown` over the library packages and fails when `getrandom` appears (planned, S0.1) | [SPEC-DET-001](spec.md#spec-det-001), [SPEC-DET-012](spec.md#spec-det-012) |
 | INV-02 | Dependencies point downward along the allowed-edge table of [section 3.3](#33-allowed-dependency-edges) | Machine check of `Cargo.toml` edges (planned, S1.4) | [SPEC-EXT-001](spec.md#spec-ext-001), [SPEC-EXT-002](spec.md#spec-ext-002) |
 | INV-03 | A stage is accepted only on a residual recomputed from the system it solved. This holds for every method: Krylov, direct, Newton, fixed point, time step, eigenpair | Numerics tests per method | [SPEC-CNV-002](spec.md#spec-cnv-002) |
-| INV-04 | The first non-converged stage sets the run's stop reason. Traces of executed stages remain. Physical quantities and balances are withheld for the whole run, including earlier output times of a transient run | Each domain or coupled solver returns no quantities or balances when a stage does not converge (implemented per kind, for example the empty `Solution` of `crates/caekit-mechanics/src/elastic_solid.rs`); `caekit::solve` sets the run stop reason from the first non-converged stage (implemented, `crates/caekit/src/lib.rs`); one test per kind. Withholding centrally in `caekit::solve` when `stop_reason ≠ converged` is Later | [SPEC-CNV-004](spec.md#spec-cnv-004) |
+| INV-04 | The first non-converged stage sets the run's stop reason. Traces of executed stages remain. Physical quantities and balances are withheld for the whole run, including earlier output times of a transient run | Each domain or coupled solver returns no quantities or balances when a stage does not converge (implemented per kind, for example the empty `Solution` of `crates/caekit-mechanics/src/elastic_solid.rs`); `caekit::solve` sets the run stop reason from the first non-converged stage (implemented, `crates/caekit/src/lib.rs`); one test per kind. The report assembly in `caekit::solve` also clears quantities and balances on non-convergence | [SPEC-CNV-004](spec.md#spec-cnv-004) |
 | INV-05 | Accept, reject, stop, branch, pivot and sort decisions and reported values use only IEEE 754 correctly rounded or exact operations: `+ − × ÷ sqrt mul_add abs copysign` and comparisons; `min` and `max` only where the operands cannot be zeros of opposite sign | `caekit_numerics::fmath` and Clippy (planned, S0.1) | [SPEC-DET-003](spec.md#spec-det-003), [SPEC-DET-004](spec.md#spec-det-004) |
 | INV-06 | Iteration order is index order. Sorting uses `f64::total_cmp` with an index tie-break. Duplicate matrix contributions accumulate in insertion order | Review; bit-identity gates on refactors | [SPEC-DET-006](spec.md#spec-det-006), [SPEC-DET-008](spec.md#spec-det-008) |
 | INV-07 | NaN and infinity never reach a report or a digest. A non-finite norm is `numerical_breakdown`, never convergence | `Quantity` finite gate (implemented, `crates/caekit-types/src/quantity.rs`, applied in `crates/caekit/src/lib.rs`); guard in every driver | [SPEC-CNV-009](spec.md#spec-cnv-009) |
 | INV-08 | A valid version 1 document keeps its typed value, its serialized bytes, its `model_sha256` and its report key set | `crates/caekit/tests/model_identity.rs` (implemented); report key-set snapshots (Later) | [SPEC-DOC-003](spec.md#spec-doc-003), [SPEC-DOC-004](spec.md#spec-doc-004) |
-| INV-09 | No input panics. `expect` and `unreachable!` state an invariant that earlier validation established and name it | Review; fuzzing in a non-required job (Later) | [SPEC-DOC-006](spec.md#spec-doc-006) |
+| INV-09 | No input panics. `expect` and `unreachable!` state an invariant that earlier validation established and name it | Review and bounded reader and solver mutations in a non-required CI job | [SPEC-DOC-006](spec.md#spec-doc-006) |
 | INV-10 | Every loop is bounded by a count, never by elapsed time. Simulated time is `t_k = k·Δt`, never an accumulated sum | Review | [SPEC-CNV-011](spec.md#spec-cnv-011), [SPEC-DET-009](spec.md#spec-det-009) |
 | INV-11 | Library crates choose no backend: no BLAS provider, no thread pool, no SIMD feature, no relaxed SIMD | `default-features = false` pins; build flags in CI | [SPEC-DET-007](spec.md#spec-det-007) |
 | INV-12 | Vocabularies in documents are closed: stop reasons, causes, condition kinds, outputs, methods. Unknown values are errors | `deny_unknown_fields` and closed enums (implemented) | [SPEC-DOC-001](spec.md#spec-doc-001), [SPEC-CNV-003](spec.md#spec-cnv-003) |
@@ -344,7 +344,7 @@ Version 1 document types stay in their domain crates; version 2 collects documen
 | --- | --- | --- |
 | `TetraMesh`, `FaceRegion`, `LineMesh`, `AxisFrame`, `GeometryRevision` | Version 1 document types; conventions on [model.md](../model.md) and the physics pages | Implemented, frozen |
 | Checked tetrahedral view with topology | Positive orientation, face connectivity, manifold faces, region ownership | Implemented (`crates/caekit-mesh/src/tetra.rs`) |
-| Entities | Edges as `(min, max)` vertex pairs in ascending lexicographic order; cell edges in local order (0,1),(0,2),(0,3),(1,2),(1,3),(2,3); faces as sorted triples, ascending; face `i` of a cell is opposite local vertex `i`. Built on request with ordered maps and `try_reserve` | Planned S1.2 |
+| Entities | Edges as `(min, max)` vertex pairs in ascending lexicographic order; cell edges in local order (0,1),(0,2),(0,3),(1,2),(1,3),(2,3); faces as sorted triples, ascending; face `i` of a cell is opposite local vertex `i`. Built on request with sorted vectors and fallible reservation | Implemented by `CheckedTetraMesh::entities` |
 | Cell partition | Named volume regions with per-cell ownership for any domain | Partly implemented for multimaterial conduction; generalized S1.2 |
 | Mesh trait | Not introduced until a second volume cell type (hexahedron) is accepted | Planned with H8 |
 | Refinement | Newest-vertex bisection with marking ties broken by cell index; bisection edge a pure function of vertex indices and level | Planned S6.4 |
@@ -1489,14 +1489,29 @@ An exactly representable solution is a patch test, never an order test.
 ### 11.2 Refinement studies
 
 Procedure: at least four self-similar levels with constant ratio `r`; algebraic error made negligible; observed
-order fitted by least squares over the levels and required within a two-sided band `[p_f − δ, p_f + δ]` of the
-formal order `p_f` (a super-optimal result is also a defect); integral norms evaluated with a rule of degree at
-least `2p + 3`; every coefficient, boundary-condition type and output tested.
+order fitted by least squares over the finest three levels and required within a two-sided band
+`[p_f − δ, p_f + δ]` of the formal order `p_f` (a super-optimal result is also a defect); integral norms evaluated
+with a rule of degree at least `2p + 3`; every coefficient, boundary-condition type and output tested.
 
-**Band rule.** The physics page of each kind states `δ` with its reason (INV-14): the algebraic share derived
-below (`≤ 0.01`) plus the pre-asymptotic spread, measured as the spread of the pairwise observed orders of the
-finest three levels, with the command that reproduces it. A `δ` is never chosen to make a measured order pass
-(AGENTS.md §4).
+**Band rule (ruling [R-9](#171-rulings)).** Every refinement study applies one rule, implemented and derived in
+`caekit_numerics::verify::band_check`:
+
+- the observed order `p̂` is the least-squares slope over the finest three levels, at constant `r` the mean of
+  the two finest pairwise orders;
+- `δ = Δp + 1.5 s`, where `Δp = 0.01` is the algebraic share derived below and `s` the spread of the two finest
+  pairwise orders;
+- the band is valid when the distances `d₂`, `d₃` of the two finest pairwise orders from `p_f` shrink by
+  `ρ = d₂/d₃ ≥ 2` per level, the rate of a leading correction of order `h¹` or higher at `r ≥ 2`; the study
+  checks it, and a finest distance `|d₃| ≤ Δp` needs no rate.
+
+With `d₂` and `d₃` of one sign the three-level slope lies `s (ρ + 1)/(2(ρ − 1))` from `p_f`, at most `1.5 s` for
+`ρ ≥ 2`. The physics page of each kind reports `p̂`, `s`, `δ` and `ρ` with the command that reproduces them
+(INV-14). A page may also state a bound on `s` in advance and fail its study above it; that narrows the
+acceptance and never widens the band. A `δ` is never chosen to make a measured order pass (AGENTS.md §4).
+
+History: the rule first fitted all levels with `δ = Δp + s`, which on four levels lies at least `2.095 s` from
+`p_f` under the same model (`(3p₁ + 4p₂ + 3p₃)/10`, minimum at `ρ = 2.83`) and so rejected every visibly
+pre-asymptotic four-level study with `s > 0.0091`, however correct the scheme (2026-11-21).
 
 ```text
 with an exact solution:   p̂ = ln(e_coarse/e_fine)/ln r
@@ -1512,9 +1527,10 @@ Sources: [Roache 1994; NASA NPARC; Celik et al. 2008; Eça, Hoekstra 2014]. `F_s
 NPARC; [Celik et al. 2008] calls `r > 1.3` desirable, from experience rather than derivation.
 
 **Algebraic budget (derived).** If the computed error is `e_d(1 + δ)` with `|δ| ≤ δ_max` on both levels, then
-`p̂ − p = [ln(1 + δ_c) − ln(1 + δ_f)]/ln r`, bounded by about `2δ_max/ln r`. Keeping `|p̂ − p| ≤ 0.01` at
-`r = 2` needs `δ_max ≤ 0.005·ln 2 ≈ 3.5e-3` ([SPEC-VER-002](spec.md#spec-ver-002)). Refinement stops before the error approaches the
-rounding floor of [section 10.2](#102-algebraic-error).
+`p̂ − p = [ln(1 + δ_c) − ln(1 + δ_f)]/ln r`, at most `2 artanh(δ_max)/ln r ≈ 2δ_max/ln r`. Keeping
+`|p̂ − p| ≤ 0.01` at `r = 2` needs `δ_max ≤ tanh(0.005·ln 2) = 3.46572e-3`, which the first-order value
+`0.005·ln 2 = 3.46574e-3` exceeds by a relative `4.0e-6` ([SPEC-VER-003](spec.md#spec-ver-003) rounds it down
+to `3.4e-3`). Refinement stops before the error approaches the rounding floor of [section 10.2](#102-algebraic-error).
 
 ### 11.3 Traps
 
@@ -1556,7 +1572,7 @@ The present layers are listed in [ARCHITECTURE.md](../ARCHITECTURE.md#verificati
 | Cross-target exactness | iteration counts and stop reasons equal; values at 1e-10; report digests recorded | WASI job, extended |
 | Bit-identity gates | refactors S1.1 and S1.3 change no bit of any reference report or iteration history | numerics and kernel tests |
 | Documentation | capability record ↔ physics page ↔ catalogue IDs; allowed dependency edges | `scripts/check-docs.mjs`, extended |
-| Fuzzing (Later) | no panic on arbitrary bytes with small iteration budgets | non-required CI job |
+| Bounded mutations | No panic on mutated bytes or typed models with small iteration budgets | Non-required CI job |
 
 ---
 
@@ -1577,23 +1593,23 @@ how each is reached.
 
 | Rule | Mechanism | Status |
 | --- | --- | --- |
-| IEEE-exact operations in result and decision paths | `fmath::norm2(x)`: with `s = maxᵢ abs(xᵢ)`, `0` if `s = 0`; `+∞` if any `xᵢ` is infinite; NaN propagates; otherwise `s·sqrt(Σ(xᵢ/s)²)` summed in index order (or Blue's accumulators [Blue 1978]); unit tests for the zero, infinite and subnormal cases. `sq(x) = x*x`; tetrahedron quality without `powf(2/3)` (compare cubes). `+ − × ÷ sqrt mul_add` are correctly rounded, and `a*b + c` is not contracted because each operation is specified with an IEEE 754 result [Rust RFC 3514]; `hypot`, `powi`, `powf`, `exp`, `ln` and the trigonometric functions are documented as non-deterministic in precision [Rust std f64] | Planned S0.1 |
+| IEEE-exact operations in result and decision paths | `fmath::norm2(x)`: with `s = maxᵢ abs(xᵢ)`, `0` if `s = 0`; `+∞` if any `xᵢ` is infinite; NaN propagates; otherwise `s·sqrt(Σ(xᵢ/s)²)` summed in index order (or Blue's accumulators [Blue 1978]); unit tests for the zero, infinite and subnormal cases. `sq(x) = x*x`; tetrahedron quality uses a squared portable cube root. `+ − × ÷ sqrt mul_add` are correctly rounded, and `a*b + c` is not contracted because each operation is specified with an IEEE 754 result [Rust RFC 3514]; `hypot`, `powi`, `powf`, `exp`, `ln` and the trigonometric functions are documented as non-deterministic in precision [Rust std f64] | Implemented |
 | Transcendentals | every transcendental through `libm` with `default-features = false`, so every target compiles the same portable code; `libm`'s `arch` feature (on by default) enables architecture-specific routines | Planned S2.5, first user `tanh` of [section 6.2](#62-thermal-and-hydraulic-networks); ruling R-7 |
-| No platform math in library code | `clippy.toml` in the workspace root, `disallowed-methods`: `f64::{hypot, powi, powf, exp, exp2, exp_m1, ln, ln_1p, log, log2, log10, cbrt, sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh}` and the `algebraic_*` operations. Clippy applies one configuration to every target of a package, and the tests of library packages need platform math for independent references (for example `.exp()` in `crates/caekit/tests/cooling_channel.rs`, `.powi` in `crates/caekit/tests/heat_conduction.rs`). Each such test or benchmark target therefore starts with `#![allow(clippy::disallowed_methods)]` and a comment naming its reference; library `src/` code has no such allow. The Clippy command of AGENTS.md §5 passes | Planned S0.1 |
-| No unordered containers | `disallowed-types`: `std::collections::{HashMap, HashSet}`, with the same allow rule for test targets | Planned S0.1 |
+| No platform math in library code | The workspace `clippy.toml` disallows platform float methods. Clippy applies the policy to tests too. Independent references and measurements have scoped exceptions | Implemented |
+| No unordered containers | `disallowed-types`: `std::collections::{HashMap, HashSet}`, with the same allow rule for test targets | Implemented |
 | Insertion-order accumulation | Pattern-first CSR equals ordered-map accumulation bitwise (S1.3 gate) | Planned S1.3 |
 | Fixed reduction order | serial dot products and norms in index order; MGS in column order; Anderson QR in fixed column order | Implemented for the serial PCG (`crates/caekit-numerics/src/lib.rs`); planned for new methods |
 | No hidden state, no randomness | deterministic start vectors; no `static mut`, no `thread_local`; a script runs `cargo tree --locked -e normal --target wasm32-unknown-unknown -p caekit -p caekit-types -p caekit-numerics -p caekit-mesh -p caekit-thermal -p caekit-mechanics -p caekit-fluids` and fails if the output names `getrandom` (`cargo tree -i getrandom` exits with an error when the package is absent from `Cargo.lock`, so its output is not a testable pass condition; `-e normal` excludes dev-dependencies) | Planned S0.1 |
 | Dev-only cross-checks | Cargo unifies dev-dependency features into every build of a package's test targets, so a dev-dependency can change the features of a shared crate in the build that runs the bit tests. `faer`'s default `std` feature enables `libm/arch`. The `faer` cross-check of S2.3 therefore lives in a crate outside the library packages' test graph, or uses `faer` with `default-features = false` and without `std`; `cargo tree -e features -i libm` shows no `arch` feature in any build that runs the bit tests (unverified until that command is run) | Planned S2.3 |
 | Non-finite handling | rejected before reporting and hashing; NaN sign and payload are non-deterministic in Rust and WebAssembly [Rust RFC 3514; WebAssembly numerics] | Implemented for quantities (`crates/caekit-types/src/quantity.rs`); planned for every driver |
 | SIMD and float modes | no relaxed SIMD (non-deterministic by definition [WebAssembly nondeterminism]); no `simd128` build without rerunning the comparison; no fast-math | Holds today (no `simd` or `target_feature` use under `crates/`); review |
-| Cross-target comparison | `verify-reference-cases.mjs` compares `iterations` and every `stop_reason` exactly, values at 1e-10, and records both report digests (R1 telemetry) | Today: convergence of every stage on both targets and values at 1e-10; the exact comparison is planned S0.1 |
+| Cross-target comparison | `verify-reference-cases.mjs` compares `iterations` and every `stop_reason` exactly, values at 1e-10, and records both report digests (R1 telemetry) | Implemented |
 | Eigenvectors | normalization rule; subspace comparison across targets | Planned S4.3 |
 
-`libm` is the first numeric dependency of library crates beyond `serde` and needs ruling R-7, a
-[provenance.md](../provenance.md) entry and a cross-target bit test of each function used before a
-transcendental path is claimed at R1. None of the sites of [section 12.3](#123-known-sites) needs a
-transcendental function, so S0.1 does not add `libm`.
+S0.1 uses the portable `libm` cube root for the reported tetrahedral mean ratio. The dependency
+uses `default-features = false`, is recorded in [provenance.md](../provenance.md), and the
+cube-root reference test runs on native and WASI. Apply the same feature configuration and
+cross-target testing to any additional `libm` function used in result paths.
 
 ### 12.3 Known sites
 
@@ -1605,8 +1621,8 @@ decides, are listed in the Status of [SPEC-DET-003](spec.md#spec-det-003). S0.1 
 | `crates/caekit-numerics/src/lib.rs`, `norm` | `fmath::norm2` |
 | `crates/caekit-numerics/src/lib.rs`, rounding bound beside the stagnation test | scaled sum with `sqrt` |
 | `crates/caekit-mesh/src/line.rs`, unit-vector check of the axis frame | `norm2` |
-| `crates/caekit-mesh/src/tetra.rs`, `length` | `norm2` of three components |
-| `crates/caekit-mesh/src/tetra.rs`, mean-ratio quality | `x*x`; no `powf(2/3)` (compare cubes) |
+| `crates/caekit-mesh/src/tetra.rs`, `length` | Three-component norm scaled by a power of two to preserve the reference stage decisions |
+| `crates/caekit-mesh/src/tetra.rs`, mean-ratio quality | `x*x` and a squared portable cube root |
 | `crates/caekit-mechanics/src/elastic_solid.rs`, thermal-strain variance | `x*x` |
 | `crates/caekit-mechanics/src/elastic_solid.rs`, reaction-balance tolerance scale (coupled thermoelastic path only) | `norm2`, which must return `0` when only prescribed displacements load the body and the scale is zero |
 | `.max` forming each stage threshold (`pcg`, the coupled energy stage, the reaction-balance tolerance) | an explicit comparison with a stated tie result, or the absolute operand normalized with `a + 0.0`, so that a `-0.0` absolute tolerance cannot give a target-dependent signed zero |
@@ -1906,12 +1922,13 @@ or `Rejected`.
 | --- | --- | --- | --- | --- |
 | R-1 | May an existing failure path populate the already-declared optional key `diagnostic`, and may existing stages emit `cause` and the other extended keys under `"diagnostics": "extended"`? | Yes to both ([section 5.8](#58-convergence-trace), [section 13.2](#132-opt-in-invariance)); record the rule in AGENTS.md when accepted | S0.2 | Open |
 | R-2 | Is R1 (bitwise native = WebAssembly) a product claim? | Measure from S0.1; promote after one release cycle | promotion of R1 | Open |
-| R-3 | Does the S0.1 rounding-level movement need more than a golden update and a CHANGELOG entry? | No: within R2 and before the first tag | S0.1 release placement | Open |
+| R-3 | Does the S0.1 rounding-level movement need more than a golden update and a CHANGELOG entry? | No: within R2 and before the first tag | S0.1 release placement | Accepted by the owner on 2026-11-21 |
 | R-4 | Where do version 2 document types live? | A module in `caekit`, unless the bindings need the schema without the solvers | version 2 | Open |
 | R-5 | Add `cause` now or with version 2? | Now, for stages introduced after the freeze; existing stages only under `"diagnostics": "extended"` (R-1) | S0.2 and every new stage | Open |
 | R-6 | A separate `caekit-electric`, or a generic scalar-diffusion kind? | Separate crate: units, signs and outputs are domain meaning; `caekit-fem` already shares the algebra | S3.4 | Open |
-| R-7 | Accept `libm` (`default-features = false`) as a numeric dependency of library crates? | Yes, with a cross-target bit test per function before relying on it | S2.5 | Open |
+| R-7 | Accept `libm` (`default-features = false`) as a numeric dependency of library crates? | Yes, with a cross-target bit test per function before relying on it | S2.5 | Open. Used in the working tree under [next steps D1](next-steps.md#decisions) (`cbrt` in `caekit-mesh`, `log` and `pow` in `caekit_numerics::verify`); a bit test exists for `cbrt` only |
 | R-8 | Does `schemars` handle the internally tagged `physics` enum with `deny_unknown_fields` correctly? | Test before S0.3 commits to the tool | S0.3 | Open |
+| R-9 | Band rule of [section 11.2](#112-refinement-studies): the rule as written rejects every visibly pre-asymptotic four-level study. Amend it, or require more levels? | Amend it to the levels of the fit with a factor derived for a checked shrink rate, as `elastic_solid` does | S0.5 sign-off | Accepted by the maintainer on 2026-11-22, option A: every study uses one rule, the least-squares fit over the finest three levels in `p_f ± (0.01 + 1.5 s)`, valid for `ρ ≥ 2`, which the study checks; implemented as `caekit_numerics::verify::band_check` ([section 11.2](#112-refinement-studies)) |
 
 ### 17.2 Risks
 

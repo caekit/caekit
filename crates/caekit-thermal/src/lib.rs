@@ -111,6 +111,25 @@ pub struct TemperatureBoundary {
 /// The initial norm is evaluated with every wetted-face wall temperature and coolant temperature
 /// equal to the inlet temperature. When the object is omitted the [`Default`] values apply: 1e-10,
 /// 1e-10 W and 1000 iterations. When it is present all three fields are required.
+///
+/// Reasons of the defaults:
+///
+/// - Relative tolerance `1e-10`. The same figure as the default of the linear solver (see
+///   `caekit_numerics::LinearSettings`, which gives its derivation), so the coupling error is not
+///   looser than the algebraic error of the stages it couples.
+/// - Absolute tolerance `1e-10` W. A floor for a start so close to the converged state that the
+///   relative threshold falls below what the residual can resolve: each entry of the residual is
+///   a heat rate of at most the initial norm of 8.4e3 W in the reference model, which rounds at
+///   about 2.2e-16 * 8.4e3 = 1.9e-12 W, so the floor is about 50 times that and stays
+///   attainable.
+///   The reference model's threshold is `1e-10 * 8351.6 W = 8.35e-7 W`, far above the floor.
+/// - Sweep limit `1000`. The reference model contracts the residual by a factor of 0.036 per
+///   sweep (geometric mean of the nine entries of `residual_l2_history` of the
+///   `coupled_wall_coolant_energy` stage in the output of
+///   `cargo run -p caekit-cli -- run examples/cooling_channel.json`) and converges in 8 sweeps. A
+///   linearly convergent iteration with contraction factor `ρ` reaches `1e-10` within 1000
+///   sweeps whenever `ρ <= 10^(-10/1000) = 0.977`, so the limit only stops an iteration that
+///   is close to not contracting at all.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CouplingSettings {
@@ -430,7 +449,8 @@ impl EnergySystem {
         }
         let threshold = settings
             .absolute_residual_tolerance_w
-            .max(settings.relative_residual_tolerance * initial);
+            .abs()
+            .max(settings.relative_residual_tolerance.abs() * initial);
         trace.residual_threshold = Some(threshold);
         trace.residual_l2_history.push(initial);
         trace.final_true_residual_l2 = Some(initial);

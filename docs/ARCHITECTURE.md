@@ -16,9 +16,10 @@ workspace is divided, which way dependencies point and where a change belongs.
 3. `caekit::solve` dispatches on the `Physics` variant to a domain solver. The solver
    returns a `Solution`: its method name, one `Convergence` per numerical stage, the
    conservation balances and the quantities.
-4. `solve` rejects quantities that are not finite, keeps the requested outputs, takes the
-   run's stop reason from the first stage that did not converge, hashes the typed model
-   and builds the `RunReport` with the `Execution` record of the reference CPU path.
+4. `solve` takes the run's stop reason from the first stage that did not converge and
+   withholds all quantities and balances for that outcome. For converged runs it rejects
+   quantities that are not finite and keeps the requested outputs. It hashes the typed
+   model and builds the `RunReport` with the `Execution` record of the reference CPU path.
 5. The surface writes the report as JSON. [Model and result documents](model.md)
 
 Because every surface exchanges the same two JSON documents, a new physics kind, field
@@ -41,7 +42,7 @@ caekit-fluids  caekit-thermal  caekit-mechanics domain solvers
 | Crate | Depends on | Responsibility | Published to |
 | --- | --- | --- | --- |
 | `caekit-types` | | `Error` and the input checks, `Output`, `Quantity`, `Balance`, `Pressure`, `MaterialSource`, `Solution` | crates.io |
-| `caekit-numerics` | | `SparseAssembly`, `ConstrainedSystem`, `LinearSettings`, `Convergence`, `StopReason`; Jacobi-preconditioned conjugate gradient in binary64 | crates.io |
+| `caekit-numerics` | | `SparseAssembly`, `ConstrainedSystem`, `LinearSettings`, `Convergence`, `StopReason`; Jacobi-preconditioned conjugate gradient in binary64; `verify` (observed order, grid convergence index, algebraic budget) | crates.io |
 | `caekit-mesh` | `caekit-types` | `LineMesh`, `AxisFrame`, `TetraMesh`, `FaceRegion`, `GeometryRevision`, mesh metrics and quality | crates.io |
 | `caekit-fluids` | mesh, numerics, types | Laminar channel momentum, mass flow and pressure recovery | crates.io |
 | `caekit-thermal` | mesh, numerics, types | Solid heat conduction for one or several materials; wall conduction and coolant energy transport across nonmatching meshes | crates.io |

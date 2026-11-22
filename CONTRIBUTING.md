@@ -20,6 +20,8 @@ node scripts/check-docs.mjs
 [README.md](README.md#reproduce-ci-locally) lists every CI job with the command that
 reproduces it. Use the narrowest command while you iterate, for example
 `cargo test --locked -p caekit --test heat_conduction`.
+The separate model mutation job checks that invalid documents and programmatic models
+return without panicking. [Reproduce the mutation suite](docs/model.md#input-mutation-checks).
 
 ## What a change contains
 

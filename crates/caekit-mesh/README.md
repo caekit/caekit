@@ -12,6 +12,8 @@ on `caekit-mesh` directly when you build on this layer alone.
   places it in the global Cartesian frame.
 - `TetraMesh` holds vertices in metres, zero-based tetrahedra and named exterior triangle
   sets. Its checks cover orientation, connectivity, manifold faces and region assignment.
+- `CheckedTetraMesh::entities` numbers unique edges and faces by lexicographic
+  vertex-index order and returns the local-to-global maps for each cell.
 - `GeometryRevision` identifies the geometry that a mesh and its assignments belong to.
 - `MeshMetrics` and `MeshQuality` report the cell count, the extreme cell sizes and the
   lowest mean-ratio quality.
@@ -29,7 +31,7 @@ The API follows the workspace version. Before 1.0 a minor version may change it;
 | [`caekit-fluids`](https://crates.io/crates/caekit-fluids) | Laminar channel momentum, mass flow and pressure recovery |
 | [`caekit-thermal`](https://crates.io/crates/caekit-thermal) | Solid heat conduction, wall conduction and coolant energy transport |
 | [`caekit-mesh`](https://crates.io/crates/caekit-mesh) | Line and tetrahedral meshes, geometry revisions, regions and mesh quality |
-| [`caekit-numerics`](https://crates.io/crates/caekit-numerics) | Sparse systems, iterative solves and convergence histories |
+| [`caekit-numerics`](https://crates.io/crates/caekit-numerics) | Sparse systems, iterative solves, convergence histories and solution verification |
 | [`caekit-types`](https://crates.io/crates/caekit-types) | Shared physical inputs, result quantities, balances and errors |
 
 [Architecture](https://github.com/caekit/caekit/blob/master/docs/ARCHITECTURE.md) describes how they depend on each other.

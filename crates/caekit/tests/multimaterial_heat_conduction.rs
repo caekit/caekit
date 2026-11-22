@@ -2,6 +2,9 @@
 //! regional energy balances, attribution of exterior power, refinement of a curved profile,
 //! and rejected volume assignments.
 
+// Reference values in tests are independent of the library decision and result paths.
+#![allow(clippy::disallowed_methods)]
+
 #[path = "common/block.rs"]
 mod block;
 mod common;
@@ -15,7 +18,61 @@ use caekit::{
 };
 
 use block::{TETRA_SAMPLES, interpolate, structured_block};
-use common::{close, region};
+use caekit_numerics::verify::{
+    BandCheck, Behaviour, ORDER_SHIFT_BUDGET, TOLERANCE_DIVISOR, algebraic_check,
+    algebraic_error_budget, band_check, classify,
+};
+use common::{close, invalid_at, region};
+
+// Allowances of the checks on the 6-tetrahedron two-layer fixture (layers of 0.01 m, 0.01 m^2
+// cross section). Linear tetrahedra represent its piecewise-linear temperature exactly, so the
+// solution differs from the analytical one only by the linear solve, which stops at the default
+// relative residual 1e-10 of docs/model.md, and by binary64 rounding. "Measured" is the largest
+// |actual - expected| over the sites that use the constant (print it in `common::close` and run
+// `cargo test -p caekit --test multimaterial_heat_conduction -- --nocapture --test-threads=1`).
+
+/// Nodal temperature in K: about 1e-9 of the 10 K to 11 K temperature differences of these cases.
+/// Measured 8.1e-10 K for the parallel heat paths and at most 5.7e-14 K elsewhere.
+const AFFINE_TEMPERATURE_TOL_K: f64 = 1.0e-8;
+/// Cell heat flux in W/m^2: 1e-9 of the 1000 W/m^2 of the layered case. Measured 4.6e-13 W/m^2.
+const AFFINE_FLUX_TOL_W_M2: f64 = 1.0e-6;
+/// Heat rates and energy imbalances in W: 1e-9 of the 10 W that crosses the interface and 3.6e-10
+/// of the 27.5 W of the parallel-path case. Measured at most 6.7e-11 W (the parallel-path
+/// interface rate and region imbalance).
+const AFFINE_POWER_TOL_W: f64 = 1.0e-8;
+/// Heat rates and imbalances of the cycle of four slabs in W: 1e-8 of the 10 W that each of the
+/// three interfaces carries. Measured 7.5e-11 W.
+const CYCLE_POWER_TOL_W: f64 = 1.0e-7;
+/// Heat rates and imbalances of the weak-convection case in W: 1e-9 of the 1e-3 W that it moves.
+/// Measured 2.4e-18 W.
+const WEAK_POWER_TOL_W: f64 = 1.0e-12;
+/// Heat rates and imbalances of the sourced layers in W: 2e-7 of the 1 W that the sources
+/// generate in total (docs/physics/multimaterial-heat-conduction.md). Measured 8.8e-13 W on 4, 8
+/// and 16 divisions.
+const SOURCED_POWER_TOL_W: f64 = 2.0e-7;
+/// Smallest ratio of the temperature errors of successive uniform levels of 4, 8 and 16
+/// divisions. Second order gives 4 and first order 2; 2.7 is an observed order of 1.43 (2^1.43),
+/// between them. Measured 4.015 and 4.005.
+const UNIFORM_TEMPERATURE_RATIO_MIN: f64 = 2.7;
+/// Smallest ratio of the flux errors of successive uniform levels, per layer. First order gives
+/// 2; 1.65 is an observed order of 0.72. Measured 1.963 and 1.987 on the left, 2.025 and 2.009 on
+/// the right.
+const UNIFORM_FLUX_RATIO_MIN: f64 = 1.65;
+/// Largest temperature error of the 16-division level in K. Measured 0.00528861 K, 3.8 times
+/// below.
+const FINEST_TEMPERATURE_ERROR_MAX_K: f64 = 0.02;
+/// Largest flux errors of the 16-division level per layer in W/m^2. Measured 71.97 and 18.08,
+/// 1.4 and 1.9 times below.
+const FINEST_FLUX_ERROR_MAX_W_M2: [f64; 2] = [100.0, 35.0];
+/// Sum of the 64 weights of the tetrahedron rule, which should be 1. Each weight is a product of
+/// five rounded factors, so 1e-14 (45 eps) lies between the typical accumulated rounding, about
+/// sqrt(64) eps = 1.8e-15, and the worst case 63 eps = 1.4e-14. Measured 2.2e-16.
+const RULE_WEIGHT_SUM_TOL: f64 = 1.0e-14;
+/// Relative allowance for the integrated volume of the two layers. The finest level accumulates
+/// 6.3e6 rule points per layer, for which a random-walk estimate of the rounding is
+/// sqrt(6.3e6) u = 2.8e-13 relative (u = 1.1e-16); the worst case m u is not attained. Measured
+/// 4.8e-14 relative.
+const VOLUME_RELATIVE_TOL: f64 = 1.0e-12;
 
 fn example() -> Model {
     Model::from_json(include_bytes!(
@@ -137,10 +194,10 @@ fn layered_conduction_matches_the_series_resistance_solution() {
         } else {
             310.0 - 1_000.0 * (x - 0.01)
         };
-        close(value, expected, 1.0e-8);
+        close(value, expected, AFFINE_TEMPERATURE_TOL_K);
         if x == 0.01 {
             interface_nodes += 1;
-            close(value, 310.0, 1.0e-8);
+            close(value, 310.0, AFFINE_TEMPERATURE_TOL_K);
         }
     }
     assert_eq!(interface_nodes, 4);
@@ -148,7 +205,7 @@ fn layered_conduction_matches_the_series_resistance_solution() {
     assert_eq!(flux.len(), mesh.cells.len());
     for vector in flux {
         for (&value, expected) in vector.iter().zip([1_000.0, 0.0, 0.0]) {
-            close(value, expected, 1.0e-6);
+            close(value, expected, AFFINE_FLUX_TOL_W_M2);
         }
     }
     let [contact] = interfaces(&report) else {
@@ -156,7 +213,7 @@ fn layered_conduction_matches_the_series_resistance_solution() {
     };
     assert_eq!(contact.from_region, "left");
     assert_eq!(contact.to_region, "right");
-    close(contact.value, 10.0, 1.0e-8);
+    close(contact.value, 10.0, AFFINE_POWER_TOL_W);
     let Quantity::ByRegion { unit, values } = &report.quantities[&Output::BoundaryHeatRate] else {
         panic!("expected exterior heat rates");
     };
@@ -169,12 +226,12 @@ fn layered_conduction_matches_the_series_resistance_solution() {
         ("z0", 0.0),
         ("z1", 0.0),
     ] {
-        close(values[name], expected, 1.0e-8);
+        close(values[name], expected, AFFINE_POWER_TOL_W);
     }
     assert_eq!(report.balances.len(), 3);
-    check_region_energy(&report, "left", 0.0, 10.0, -10.0, 1.0e-8);
-    check_region_energy(&report, "right", 0.0, -10.0, 10.0, 1.0e-8);
-    check_energy_totals(&report, 1.0e-8);
+    check_region_energy(&report, "left", 0.0, 10.0, -10.0, AFFINE_POWER_TOL_W);
+    check_region_energy(&report, "right", 0.0, -10.0, 10.0, AFFINE_POWER_TOL_W);
+    check_energy_totals(&report, AFFINE_POWER_TOL_W);
     let projection = &report.convergence[1];
     assert_eq!(projection.stage, "solid_interface_equilibration");
     assert_eq!(projection.residual_unit, "W");
@@ -217,14 +274,14 @@ fn two_regions_can_share_a_material_and_recover_the_uniform_solution() {
         close(
             region(&report, Output::BoundaryHeatRate, name),
             region(&reference, Output::BoundaryHeatRate, name),
-            1.0e-8,
+            AFFINE_POWER_TOL_W,
         );
     }
     assert_eq!(
         serde_json::to_value(&report.balances[0]).unwrap(),
         serde_json::to_value(&reference.balances[0]).unwrap()
     );
-    check_energy_totals(&report, 1.0e-8);
+    check_energy_totals(&report, AFFINE_POWER_TOL_W);
 }
 
 #[test]
@@ -260,12 +317,12 @@ fn a_cycle_of_region_pairs_keeps_the_flux_from_the_element_gradients() {
     for (rate, (from, to, power)) in rates.iter().zip(expected) {
         assert_eq!(rate.from_region, from);
         assert_eq!(rate.to_region, to);
-        close(rate.value, power, 1.0e-7);
+        close(rate.value, power, CYCLE_POWER_TOL_W);
     }
     for name in ["a", "b", "c"] {
-        check_region_energy(&report, name, 0.0, 0.0, 0.0, 1.0e-7);
+        check_region_energy(&report, name, 0.0, 0.0, 0.0, CYCLE_POWER_TOL_W);
     }
-    check_energy_totals(&report, 1.0e-7);
+    check_energy_totals(&report, CYCLE_POWER_TOL_W);
 }
 
 #[test]
@@ -288,12 +345,16 @@ fn flux_and_weak_convection_are_attributed_to_the_owning_volume() {
     for (&[x, _, _], &value) in nodes.iter().zip(values) {
         let right_drop = 0.1 * (0.02 - x.max(0.01));
         let left_drop = 0.1 * (0.01 - x).max(0.0) / 10.0;
-        close(value, 310.0 + right_drop + left_drop, 1.0e-8);
+        close(
+            value,
+            310.0 + right_drop + left_drop,
+            AFFINE_TEMPERATURE_TOL_K,
+        );
     }
-    close(interfaces(&report)[0].value, 0.001, 1.0e-12);
-    check_region_energy(&report, "left", 0.0, 0.001, -0.001, 1.0e-12);
-    check_region_energy(&report, "right", 0.0, -0.001, 0.001, 1.0e-12);
-    check_energy_totals(&report, 1.0e-12);
+    close(interfaces(&report)[0].value, 0.001, WEAK_POWER_TOL_W);
+    check_region_energy(&report, "left", 0.0, 0.001, -0.001, WEAK_POWER_TOL_W);
+    check_region_energy(&report, "right", 0.0, -0.001, 0.001, WEAK_POWER_TOL_W);
+    check_energy_totals(&report, WEAK_POWER_TOL_W);
 }
 
 #[test]
@@ -343,18 +404,18 @@ fn shared_fixed_vertices_do_not_create_transfer_between_parallel_heat_paths() {
     assert_eq!(report.stop_reason, StopReason::Converged);
     let (nodes, values) = temperatures(&report);
     for (&[x, _, _], &value) in nodes.iter().zip(values) {
-        close(value, 310.0 - 500.0 * x, 1.0e-8);
+        close(value, 310.0 - 500.0 * x, AFFINE_TEMPERATURE_TOL_K);
     }
     close(
         region(&report, Output::BoundaryHeatRate, "x0"),
         27.5,
-        1.0e-8,
+        AFFINE_POWER_TOL_W,
     );
-    close(interfaces(&report)[0].value, 0.0, 1.0e-8);
+    close(interfaces(&report)[0].value, 0.0, AFFINE_POWER_TOL_W);
     for name in ["left", "right"] {
-        check_region_energy(&report, name, 0.0, 0.0, 0.0, 1.0e-8);
+        check_region_energy(&report, name, 0.0, 0.0, 0.0, AFFINE_POWER_TOL_W);
     }
-    check_energy_totals(&report, 1.0e-8);
+    check_energy_totals(&report, AFFINE_POWER_TOL_W);
 }
 
 fn temperature(region: &str, value: f64) -> ThermalBoundary {
@@ -369,6 +430,8 @@ struct RefinementErrors {
     flux_w_m2: [f64; 2],
 }
 
+// The refinement test records timing for the separate measurement run.
+#[allow(clippy::disallowed_types)]
 fn sourced_layers(divisions: usize) -> RefinementErrors {
     const HALF_LENGTH: f64 = 0.01;
     const SIDE: f64 = 0.02;
@@ -406,16 +469,20 @@ fn sourced_layers(divisions: usize) -> RefinementErrors {
     let expected_transfer = q_interface * AREA;
     let left_exterior = (q_interface - Q[0] * HALF_LENGTH) * AREA;
     let right_exterior = -(q_interface + Q[1] * HALF_LENGTH) * AREA;
-    close(interfaces(&report)[0].value, expected_transfer, 2.0e-7);
+    close(
+        interfaces(&report)[0].value,
+        expected_transfer,
+        SOURCED_POWER_TOL_W,
+    );
     close(
         region(&report, Output::BoundaryHeatRate, "x0"),
         left_exterior,
-        2.0e-7,
+        SOURCED_POWER_TOL_W,
     );
     close(
         region(&report, Output::BoundaryHeatRate, "x1"),
         right_exterior,
-        2.0e-7,
+        SOURCED_POWER_TOL_W,
     );
     check_region_energy(
         &report,
@@ -423,7 +490,7 @@ fn sourced_layers(divisions: usize) -> RefinementErrors {
         Q[0] * HALF_LENGTH * AREA,
         left_exterior,
         -expected_transfer,
-        2.0e-7,
+        SOURCED_POWER_TOL_W,
     );
     check_region_energy(
         &report,
@@ -431,9 +498,9 @@ fn sourced_layers(divisions: usize) -> RefinementErrors {
         Q[1] * HALF_LENGTH * AREA,
         right_exterior,
         expected_transfer,
-        2.0e-7,
+        SOURCED_POWER_TOL_W,
     );
-    check_energy_totals(&report, 2.0e-7);
+    check_energy_totals(&report, SOURCED_POWER_TOL_W);
 
     let (nodes, nodal_t) = temperatures(&report);
     let cells = &case(&mut model).mesh.cells;
@@ -473,20 +540,400 @@ fn sourced_layers(divisions: usize) -> RefinementErrors {
 }
 
 #[test]
-fn a_curved_profile_converges_in_temperature_and_in_each_layer_flux() {
+fn uniform_layers_keep_nodal_powers_and_pairwise_ratios() {
+    // The first refinement check of this kind, kept unchanged: uniform meshes, four interior
+    // samples per cell, pairwise error ratios and the analytical powers at every level.
     let errors = [4, 8, 16].map(sourced_layers);
     for coarse_fine in errors.windows(2) {
         let [coarse, fine] = coarse_fine else {
             unreachable!();
         };
-        assert!(coarse.temperature_k / fine.temperature_k > 2.7);
+        assert!(coarse.temperature_k / fine.temperature_k > UNIFORM_TEMPERATURE_RATIO_MIN);
         for i in 0..2 {
-            assert!(coarse.flux_w_m2[i] / fine.flux_w_m2[i] > 1.65);
+            assert!(coarse.flux_w_m2[i] / fine.flux_w_m2[i] > UNIFORM_FLUX_RATIO_MIN);
         }
     }
-    assert!(errors[2].temperature_k < 0.02);
-    assert!(errors[2].flux_w_m2[0] < 100.0);
-    assert!(errors[2].flux_w_m2[1] < 35.0);
+    assert!(errors[2].temperature_k < FINEST_TEMPERATURE_ERROR_MAX_K);
+    assert!(errors[2].flux_w_m2[0] < FINEST_FLUX_ERROR_MAX_W_M2[0]);
+    assert!(errors[2].flux_w_m2[1] < FINEST_FLUX_ERROR_MAX_W_M2[1]);
+}
+
+// SPEC-VER-003 study of the sourced two-layer case on perturbed meshes.
+
+/// Layer thickness in m; the interface plane is x = LAYER_M.
+const LAYER_M: f64 = 0.01;
+/// Edge of the square cross section in m.
+const CROSS_SECTION_M: f64 = 0.02;
+const CONDUCTIVITY: [f64; 2] = [10.0, 1.0];
+const END_TEMPERATURES_K: [f64; 2] = [311.0, 300.0];
+const SOURCES: [f64; 2] = [200_000.0, 50_000.0];
+/// Divisions per axis of the self-similar levels. Each level halves the mesh spacing, so r = 2.
+const STUDY_DIVISIONS: [usize; 4] = [4, 8, 16, 32];
+const RATIO: f64 = 2.0;
+/// Largest vertex displacement as a fraction of the spacing `h`. The test asserts a positive
+/// smallest cell volume per level and prints it.
+///
+/// Reason for 0.1 and not 0.2: each level has its own random mesh, so the constant of the error
+/// differs from level to level by a few parts in a thousand, and the pairwise orders drift with
+/// it instead of approaching the formal order. At 0.2 the study failed the band rule on the
+/// shrink rate (temperature 0.6204, left flux 1.6), which no band widening can repair; at 0.1
+/// and 0.05 it meets the rule. 0.1 keeps the mesh distinctly non-uniform (smallest cell above
+/// half of the unperturbed volume). The three measured runs are on the physics page.
+const PERTURBATION: f64 = 0.1;
+/// Formal orders of the measured norms for linear tetrahedra: the L2 norm of the temperature
+/// converges with order 2 and the L2 norm of the flux, which is the gradient, with order 1
+/// (Ciarlet 2002, chapter 3: the solution is smooth inside each layer and the mesh conforms to
+/// the interface).
+const FORMAL_ORDERS: [f64; 3] = [2.0, 1.0, 1.0];
+const NORMS: [&str; 3] = ["T L2 [K]", "q left L2 [W/m^2]", "q right L2 [W/m^2]"];
+
+#[derive(Debug)]
+struct Level {
+    divisions: usize,
+    cells: usize,
+    spacing_m: f64,
+    /// Smallest cell volume divided by the volume `h^3/6` of a cell of the unperturbed mesh.
+    smallest_volume_ratio: f64,
+    /// Root mean square error of the temperature in K and of each layer's flux in W/m^2.
+    errors: [f64; 3],
+    iterations: usize,
+}
+
+/// A hash of `seed` mapped to [-1, 1], from the SplitMix64 finalizer, so a perturbed mesh is the
+/// same on every platform and in every run.
+fn unit_hash(seed: u64) -> f64 {
+    let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    (z >> 11) as f64 / (1_u64 << 53) as f64 * 2.0 - 1.0
+}
+
+/// Displaces the vertices of the block of `structured_block`, keeping the exterior planes and the
+/// interface plane x = `LAYER_M` where they are: a vertex on such a plane moves only within it, so
+/// every named boundary region and the interface stay planar.
+fn perturb(mesh: &mut caekit::TetraMesh, divisions: usize, amplitude_m: f64) {
+    let side = divisions + 1;
+    for (index, vertex) in mesh.vertices_m.iter_mut().enumerate() {
+        let lattice = [index / (side * side), index / side % side, index % side];
+        for axis in 0..3 {
+            let fixed = lattice[axis] == 0
+                || lattice[axis] == divisions
+                || (axis == 0 && lattice[axis] == divisions / 2);
+            if !fixed {
+                vertex[axis] += amplitude_m * unit_hash((3 * index + axis) as u64);
+            }
+        }
+    }
+}
+
+/// Tetrahedron volume in m^3.
+fn tetrahedron_volume(corners: [[f64; 3]; 4]) -> f64 {
+    let edge = |i: usize| std::array::from_fn::<f64, 3, _>(|a| corners[i][a] - corners[0][a]);
+    let (u, v, w) = (edge(1), edge(2), edge(3));
+    let cross = [
+        v[1] * w[2] - v[2] * w[1],
+        v[2] * w[0] - v[0] * w[2],
+        v[0] * w[1] - v[1] * w[0],
+    ];
+    (u[0] * cross[0] + u[1] * cross[1] + u[2] * cross[2]).abs() / 6.0
+}
+
+/// Barycentric points and weights of a rule on the tetrahedron, exact to degree 5. The weights sum
+/// to 1 and multiply the cell volume. It is the Duffy map of the cube with 4-point Gauss-Legendre
+/// in each direction: the map's Jacobian adds degree 2 in the first variable and 4 points are
+/// exact to degree 7 = 5 + 2. The squared error of a P1 field against a quadratic is of degree 4
+/// and the squared flux error against a linear field of degree 2, so every integral below is
+/// exact up to rounding; the rule's degree exceeds the integrands' own.
+fn tetrahedron_rule() -> Vec<([f64; 4], f64)> {
+    // Gauss-Legendre on [0, 1] with 4 points: (node, weight).
+    const NODES: [(f64, f64); 4] = [
+        (0.069_431_844_202_973_71, 0.173_927_422_568_726_93),
+        (0.330_009_478_207_571_87, 0.326_072_577_431_273_07),
+        (0.669_990_521_792_428_1, 0.326_072_577_431_273_07),
+        (0.930_568_155_797_026_3, 0.173_927_422_568_726_93),
+    ];
+    let mut rule = Vec::new();
+    for (u, wu) in NODES {
+        for (v, wv) in NODES {
+            for (w, ww) in NODES {
+                let lambda = [u, v * (1.0 - u), w * (1.0 - u) * (1.0 - v)];
+                rule.push((
+                    [
+                        1.0 - lambda[0] - lambda[1] - lambda[2],
+                        lambda[0],
+                        lambda[1],
+                        lambda[2],
+                    ],
+                    6.0 * wu * wv * ww * (1.0 - u).powi(2) * (1.0 - v),
+                ));
+            }
+        }
+    }
+    rule
+}
+
+/// Interface values of the analytical two-layer solution for sources `q` in W/m^3: the flux `q_I`
+/// in W/m^2 along +x and the temperature `T_I` in K at x = `LAYER_M`.
+fn interface_state(q: [f64; 2]) -> (f64, f64) {
+    let source_drop = CONDUCTIVITY.map(|k| LAYER_M.powi(2) / (2.0 * k));
+    let q_interface = (END_TEMPERATURES_K[0] - END_TEMPERATURES_K[1] + q[0] * source_drop[0]
+        - q[1] * source_drop[1])
+        / (LAYER_M / CONDUCTIVITY[0] + LAYER_M / CONDUCTIVITY[1]);
+    let t_interface =
+        END_TEMPERATURES_K[0] - q_interface * LAYER_M / CONDUCTIVITY[0] + q[0] * source_drop[0];
+    (q_interface, t_interface)
+}
+
+/// The model of one level: the perturbed block, the two layers, the sources `q` in W/m^3 and the
+/// relative linear-solver tolerance divided by `tolerance_divisor`.
+fn layered_model(divisions: usize, q: [f64; 2], tolerance_divisor: f64) -> (Model, f64) {
+    let mut model = example();
+    model.linear_solver.relative_residual_tolerance /= tolerance_divisor;
+    let multi = case(&mut model);
+    multi.mesh = structured_block([CROSS_SECTION_M; 3], divisions);
+    let spacing_m = CROSS_SECTION_M / divisions as f64;
+    perturb(&mut multi.mesh, divisions, PERTURBATION * spacing_m);
+    for (i, volume) in multi.thermal.volume_regions.iter_mut().enumerate() {
+        volume.cells.clear();
+        volume.volumetric_heat_source_w_m3 = q[i];
+    }
+    for (i, &cell) in multi.mesh.cells.iter().enumerate() {
+        let x = interpolate(cell.map(|node| multi.mesh.vertices_m[node][0]), [0.25; 4]);
+        multi.thermal.volume_regions[usize::from(x > LAYER_M)]
+            .cells
+            .push(i);
+    }
+    (model, spacing_m)
+}
+
+/// Solves one level and measures the three error norms against the analytical solution for
+/// sources `q`.
+fn measure_level(divisions: usize, q: [f64; 2], tolerance_divisor: f64) -> Level {
+    let (mut model, spacing_m) = layered_model(divisions, q, tolerance_divisor);
+    let report = solve(&model).unwrap();
+    assert_eq!(report.stop_reason, StopReason::Converged);
+    let (nodes, nodal_t) = temperatures(&report);
+    let (q_interface, t_interface) = interface_state(q);
+    let rule = tetrahedron_rule();
+    let weight_sum: f64 = rule.iter().map(|(_, w)| w).sum();
+    assert!(
+        (weight_sum - 1.0).abs() < RULE_WEIGHT_SUM_TOL,
+        "{weight_sum}"
+    );
+    let cells = &case(&mut model).mesh.cells;
+    let mut temperature_error = 0.0;
+    let mut flux_error = [0.0; 2];
+    let mut volume = [0.0; 2];
+    let mut smallest_volume = f64::INFINITY;
+    for (&cell, &[qx, qy, qz]) in cells.iter().zip(fluxes(&report)) {
+        let corners = cell.map(|node| nodes[node]);
+        let cell_volume = tetrahedron_volume(corners);
+        smallest_volume = smallest_volume.min(cell_volume);
+        let xs = corners.map(|corner| corner[0]);
+        let ts = cell.map(|node| nodal_t[node]);
+        let layer = usize::from(interpolate(xs, [0.25; 4]) > LAYER_M);
+        for &(weights, weight) in &rule {
+            let z = interpolate(xs, weights) - LAYER_M;
+            let expected_t =
+                t_interface - (q_interface * z + 0.5 * q[layer] * z * z) / CONDUCTIVITY[layer];
+            let expected_q = q_interface + q[layer] * z;
+            let t = interpolate(ts, weights);
+            temperature_error += weight * cell_volume * (t - expected_t).powi(2);
+            flux_error[layer] +=
+                weight * cell_volume * ((qx - expected_q).powi(2) + qy.powi(2) + qz.powi(2));
+            volume[layer] += weight * cell_volume;
+        }
+    }
+    let total_volume = volume[0] + volume[1];
+    let level = Level {
+        divisions,
+        cells: cells.len(),
+        spacing_m,
+        smallest_volume_ratio: smallest_volume / (spacing_m.powi(3) / 6.0),
+        errors: [
+            (temperature_error / total_volume).sqrt(),
+            (flux_error[0] / volume[0]).sqrt(),
+            (flux_error[1] / volume[1]).sqrt(),
+        ],
+        iterations: report.convergence[0].iterations,
+    };
+    // The mesh fills two layers of the cross section: the integrated volume checks the rule and
+    // the perturbation.
+    close(
+        total_volume,
+        2.0 * LAYER_M * CROSS_SECTION_M.powi(2),
+        VOLUME_RELATIVE_TOL * 2.0 * LAYER_M * CROSS_SECTION_M.powi(2),
+    );
+    assert!(level.smallest_volume_ratio > 0.0, "{level:?}");
+    level
+}
+
+/// The band rule of `docs/design/blueprint.md` section 11.2 for one norm of `levels`
+/// (`caekit_numerics::verify::band_check`): the fit over the finest three levels against the
+/// formal order, with the half-width from the measured spread, and the shrink rate of the
+/// distances to the formal order.
+fn study_band(levels: &[Level], norm: usize) -> BandCheck {
+    let spacings: Vec<f64> = levels.iter().map(|level| level.spacing_m).collect();
+    let errors: Vec<f64> = levels.iter().map(|level| level.errors[norm]).collect();
+    band_check(&spacings, &errors, FORMAL_ORDERS[norm]).unwrap()
+}
+
+/// Solves every study level for sources `q`, one thread per level where the target has threads.
+///
+/// `wasm32-wasip1` cannot spawn threads, so there the levels are solved one after another. The
+/// levels are independent and each solve is deterministic, so both paths give the same values.
+#[cfg(target_os = "wasi")]
+fn measure_all(q: [f64; 2], tolerance_divisor: f64) -> Vec<Level> {
+    STUDY_DIVISIONS
+        .iter()
+        .map(|&divisions| measure_level(divisions, q, tolerance_divisor))
+        .collect()
+}
+
+/// Solves every study level for sources `q`, one thread per level.
+#[cfg(not(target_os = "wasi"))]
+fn measure_all(q: [f64; 2], tolerance_divisor: f64) -> Vec<Level> {
+    std::thread::scope(|scope| {
+        let jobs: Vec<_> = STUDY_DIVISIONS
+            .iter()
+            .map(|&divisions| scope.spawn(move || measure_level(divisions, q, tolerance_divisor)))
+            .collect();
+        jobs.into_iter().map(|job| job.join().unwrap()).collect()
+    })
+}
+
+/// The levels with the sources at the example's solver tolerance. Computed once and shared by the
+/// study and the trap check, which takes its band from them.
+fn sourced_levels() -> &'static [Level] {
+    static LEVELS: std::sync::OnceLock<Vec<Level>> = std::sync::OnceLock::new();
+    LEVELS.get_or_init(|| measure_all(SOURCES, 1.0))
+}
+
+#[test]
+fn a_curved_profile_converges_in_temperature_and_in_each_layer_flux() {
+    assert!(STUDY_DIVISIONS.len() >= 4, "VER-003 needs four levels");
+    for pair in STUDY_DIVISIONS.windows(2) {
+        assert_eq!(
+            pair[1],
+            2 * pair[0],
+            "levels must be self-similar with r = 2"
+        );
+    }
+    let budget = algebraic_error_budget(RATIO).unwrap();
+    eprintln!(
+        "algebraic budget delta = {ORDER_SHIFT_BUDGET} ln({RATIO})/2 = {budget:.6e}; \
+         perturbation {PERTURBATION} h"
+    );
+    let levels = sourced_levels();
+    let tight = measure_all(SOURCES, TOLERANCE_DIVISOR);
+    for (level, tight) in levels.iter().zip(&tight) {
+        eprintln!(
+            "{:>2} divisions, {:>6} cells, h = {:.6e} m, smallest cell {:.4} h^3/6, \
+             {} iterations; errors {:.8e} K, {:.8e} and {:.8e} W/m^2",
+            level.divisions,
+            level.cells,
+            level.spacing_m,
+            level.smallest_volume_ratio,
+            level.iterations,
+            level.errors[0],
+            level.errors[1],
+            level.errors[2],
+        );
+        for norm in 0..3 {
+            let check = algebraic_check(level.errors[norm], tight.errors[norm], RATIO).unwrap();
+            eprintln!(
+                "    algebraic change of {}: {:.3e} (budget {:.3e})",
+                NORMS[norm], check.relative_change, check.budget
+            );
+            assert!(check.within_budget(), "{:?}", check.warning());
+        }
+    }
+    // Every norm is printed before any verdict, so a failing study shows all of its measurements.
+    let mut failures = Vec::new();
+    for norm in 0..3 {
+        let check = study_band(levels, norm);
+        let errors: Vec<f64> = levels.iter().map(|level| level.errors[norm]).collect();
+        // Errors from the finest level to the coarsest, as `classify` takes them.
+        let fine_to_coarse: Vec<f64> = errors.iter().rev().copied().collect();
+        assert_eq!(classify(&fine_to_coarse), Ok(Behaviour::Monotone));
+        eprintln!(
+            "{}: pairwise orders {:.6?}, fitted (finest three) {:.6}, spread {:.6}, \
+             half-width {:.6}, band [{:.6}, {:.6}], finest distance {:.6}, contraction {:.4}",
+            NORMS[norm],
+            check.pairwise_orders,
+            check.fitted_order,
+            check.spread,
+            check.half_width,
+            check.band[0],
+            check.band[1],
+            check.finest_distance,
+            check.contraction
+        );
+        if let Some(failure) = check.failure() {
+            failures.push(format!("{}: {failure}", NORMS[norm]));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+#[test]
+fn the_band_rejects_the_study_without_the_source_term() {
+    // Trap check. With no source each layer is linear in x and the interface is a plane of
+    // vertices, so P1 reproduces the solution on any mesh: the errors are the solver's rounding
+    // and tolerance, not a discretization error. The study rejects them by its two parts: the
+    // band rule, and the algebraic check against the solve with the tighter tolerance. The band
+    // rule alone does not always reject noise, because the noise has a large spread and the
+    // band follows the spread, so the test also requires the fitted order to leave the band that
+    // the sourced study meets.
+    let levels = measure_all([0.0; 2], 1.0);
+    let tight = measure_all([0.0; 2], TOLERANCE_DIVISOR);
+    let sourced = sourced_levels();
+    for norm in 0..3 {
+        let trap = study_band(&levels, norm);
+        let reference = study_band(sourced, norm);
+        let changes: Vec<f64> = levels
+            .iter()
+            .zip(&tight)
+            .map(|(level, tight)| {
+                let check = algebraic_check(level.errors[norm], tight.errors[norm], RATIO).unwrap();
+                assert_eq!(check.within_budget(), check.warning().is_none());
+                check.relative_change
+            })
+            .collect();
+        let budget = algebraic_error_budget(RATIO).unwrap();
+        let changes_shown: Vec<String> = changes.iter().map(|c| format!("{c:.3e}")).collect();
+        let shown: Vec<String> = levels
+            .iter()
+            .map(|level| format!("{:.3e}", level.errors[norm]))
+            .collect();
+        eprintln!(
+            "trap {}: errors {shown:?}, pairwise orders {:.6?}, fitted {:.6}, spread {:.6}, \
+             band [{:.6}, {:.6}], contraction {:.4}, rule: {:?}; algebraic changes {changes_shown:?} \
+             (budget {budget:.3e}); band of the sourced study [{:.6}, {:.6}]",
+            NORMS[norm],
+            trap.pairwise_orders,
+            trap.fitted_order,
+            trap.spread,
+            trap.band[0],
+            trap.band[1],
+            trap.contraction,
+            trap.failure(),
+            reference.band[0],
+            reference.band[1],
+        );
+        assert!(
+            trap.failure().is_some() || changes.iter().any(|&change| change > budget),
+            "{}: neither the band rule nor the algebraic check rejects the study",
+            NORMS[norm]
+        );
+        assert!(
+            (trap.fitted_order - FORMAL_ORDERS[norm]).abs() > reference.half_width,
+            "{}: fitted order {}",
+            NORMS[norm],
+            trap.fitted_order
+        );
+    }
 }
 
 #[test]
@@ -503,43 +950,51 @@ fn measure_sourced_layers() {
 #[test]
 fn invalid_volume_assignments_fail_validation_and_solving() {
     type Change = fn(&mut MultimaterialHeatConduction);
-    let changes: [(Change, &str); 8] = [
+    let changes: [(Change, &str, &str); 8] = [
         (
             |case| {
                 case.thermal.volume_regions[0].cells.pop();
             },
+            "volume_regions",
             "cell 5 has no volume region assignment",
         ),
         (
             |case| case.thermal.volume_regions[1].cells.push(0),
+            "volume_regions[1].cells[6]",
             "volume region \"right\" assigns cell 0, already assigned to \"left\"",
         ),
         (
             |case| case.thermal.volume_regions[0].cells.push(60),
+            "volume_regions[0].cells[6]",
             "volume region \"left\" references invalid cell 60",
         ),
         (
             |case| case.thermal.volume_regions[1].name = "left".into(),
+            "volume_regions[1].name",
             "duplicate volume region name \"left\"",
         ),
         (
             |case| case.thermal.volume_regions[1].name = " ".into(),
             "volume_regions[1].name",
+            "must be nonempty",
         ),
         (
             |case| case.thermal.volume_regions[1].material_id = "missing".into(),
+            "volume_regions[1].material_id",
             "volume region \"right\" references unknown material \"missing\"",
         ),
         (
             |case| case.thermal.materials[1].id = case.thermal.materials[0].id.clone(),
+            "materials[1].id",
             "duplicate material ID \"high-k\"",
         ),
         (
             |case| case.thermal.materials[0].thermal_conductivity_w_m_k = 0.0,
             "materials[0].thermal_conductivity_w_m_k",
+            "must be positive and finite",
         ),
     ];
-    for (change, message) in changes {
+    for (change, field, message) in changes {
         let mut model = example();
         change(case(&mut model));
         let data = serde_json::to_vec(&model).unwrap();
@@ -548,16 +1003,16 @@ fn invalid_volume_assignments_fail_validation_and_solving() {
             Model::from_json(&data).unwrap_err(),
             solve(&model).unwrap_err(),
         ] {
-            assert!(error.to_string().contains(message), "{error}");
+            invalid_at(error, &format!("physics.thermal.{field}"), message);
         }
     }
     for conductivity in [f64::INFINITY, f64::NAN] {
         let mut model = example();
         case(&mut model).thermal.materials[0].thermal_conductivity_w_m_k = conductivity;
-        let error = model.validate().unwrap_err().to_string();
-        assert!(
-            error.contains("materials[0].thermal_conductivity_w_m_k"),
-            "{error}"
+        invalid_at(
+            model.validate().unwrap_err(),
+            "physics.thermal.materials[0].thermal_conductivity_w_m_k",
+            "must be positive and finite",
         );
     }
 }

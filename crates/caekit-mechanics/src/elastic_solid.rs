@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use caekit_mesh::tetra::{CheckedTetraMesh, Tet, TetraTopology, cross, dot, subtract};
 use caekit_mesh::{GeometryRevision, MeshMetrics, TetraMesh};
+use caekit_numerics::fmath::norm2;
 use caekit_numerics::{ConstrainedSystem, Convergence, LinearSettings, StopReason, norm};
 use caekit_types::error::{finite, nonempty, positive};
 use caekit_types::{Balance, Output, Quantity, SampleLocation, Solution};
@@ -255,7 +256,14 @@ impl ThermalStrain {
         let values = nodes.map(|node| self.nodal[node]);
         let mean = Self::mean(values);
         // The exact P1 tetrahedral variance follows from E[N_i^2]=1/10 and E[N_i N_j]=1/20.
-        let variance = values.into_iter().map(|v| (v - mean).powi(2)).sum::<f64>() / 20.0;
+        let variance = values
+            .into_iter()
+            .map(|value| {
+                let centered = value - mean;
+                centered * centered
+            })
+            .sum::<f64>()
+            / 20.0;
         (mean, variance)
     }
 }
@@ -419,7 +427,7 @@ impl<'a> ElasticInputs<'a> {
             let region = boundary.region();
             let Some(faces) = topology.boundaries.get(region) else {
                 return Err(Error::invalid(
-                    path,
+                    format!("{path}.region"),
                     format!("unknown exterior region {region:?}"),
                 ));
             };
@@ -438,7 +446,7 @@ impl<'a> ElasticInputs<'a> {
                             let existing = &mut values[3 * node + axis];
                             if existing.is_some_and(|other| other != *value) {
                                 return Err(Error::invalid(
-                                    path,
+                                    format!("{path}.components_m[{axis}]"),
                                     format!(
                                         "conflicting displacement at vertex {node}, component {axis}"
                                     ),
@@ -710,7 +718,7 @@ impl PreparedElasticSolid<'_> {
             .metrics
             .quality
             .as_ref()
-            .expect("checked tetrahedral quality");
+            .expect("checked tetrahedral topology records mesh quality");
         format!(
             "{reason} Minimum tetrahedral mean ratio {:.6e} at cell {}.",
             quality.minimum_mean_ratio, quality.cell_index
@@ -775,6 +783,18 @@ impl PreparedElasticSolid<'_> {
     }
 }
 
+/// Smallest norm that a rigid-mode row may keep after projection on the accepted rows for the
+/// row to count as independent.
+///
+/// Dimensionless. Reason: the rows are built from coordinates divided by the size of the body, so
+/// each starts with a norm of at least one (its translation or rotation part has unit magnitude
+/// or more). A row that lies in the span of the accepted rows keeps only rounding after the
+/// projection, a few epsilon times the row norm, that is about 1e-15; 1e-10 is five orders above
+/// that. It is also the least independence the check demands: a row below 1e-10 would mean that
+/// a prescribed displacement constrains a rigid mode through a lever arm 1e-10 times the size of
+/// the body, which no meaningful support does.
+const RIGID_MODE_INDEPENDENCE: f64 = 1.0e-10;
+
 fn supports_all_rigid_modes(vertices: &[[f64; 3]], prescribed: &[Option<f64>]) -> bool {
     let reference = vertices[0];
     let size = vertices
@@ -800,7 +820,7 @@ fn supports_all_rigid_modes(vertices: &[[f64; 3]], prescribed: &[Option<f64>]) -
                 }
             }
             let magnitude = norm(&row);
-            if magnitude > 1.0e-10 {
+            if magnitude > RIGID_MODE_INDEPENDENCE {
                 basis.push(row.map(|x| x / magnitude));
             }
             if basis.len() == 6 {
@@ -869,17 +889,22 @@ fn mechanical_balances(
         )?;
         if let Some(settings) = coupled_settings {
             let applied = loads.iter().skip(i).step_by(3);
-            let scale = applied.clone().fold(0.0_f64, |norm, f| norm.hypot(*f));
+            let scale = norm2(applied.clone().copied());
             if scale > 0.0 {
                 // A sum of n residual components is bounded by sqrt(n) times
                 // their L2 norm. Thermal equivalent loads are internal forces.
                 let n = vertices.len() as f64;
                 let sum_abs = applied.map(|f| f.abs()).sum::<f64>()
                     + reactions.iter().map(|r| r[i].abs()).sum::<f64>();
+                // The second term is the rounding of the two running sums of the balance
+                // (n - 1 additions each, relative error epsilon/2) plus the final subtraction, at
+                // most (n/2) epsilon of the sum of the absolute terms; (n + 1) epsilon is more
+                // than twice that.
                 let limit = n.sqrt()
                     * settings
                         .absolute_residual_tolerance
-                        .max(settings.relative_residual_tolerance * scale)
+                        .abs()
+                        .max(settings.relative_residual_tolerance.abs() * scale)
                     + (n + 1.0) * f64::EPSILON * sum_abs;
                 if !limit.is_finite() {
                     return Err(Error::NonFiniteResult {

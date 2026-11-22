@@ -1,0 +1,3 @@
+# Host surfaces and documentation examples may use host facilities.
+disallowed-methods = []
+disallowed-types = []
